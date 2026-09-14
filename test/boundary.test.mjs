@@ -186,3 +186,32 @@ describe('the server does not import the crypto package', () => {
     }
   })
 })
+
+describe('the README does not drift from the code', () => {
+  it('states the real test count', async () => {
+    // The README quotes a number. A quoted number with nothing checking it is a
+    // claim that goes stale on the next commit, which is the class of defect
+    // this package is otherwise careful about.
+    const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
+    const claimed = Number(readme.match(/`npm test` runs (\d+) tests/)?.[1])
+    assert.ok(Number.isInteger(claimed), 'README must state a test count')
+
+    let actual = 0
+    for (const file of await readdir(join(ROOT, 'test'))) {
+      if (!file.endsWith('.test.mjs')) continue
+      const code = await readFile(join(ROOT, 'test', file), 'utf8')
+      actual += [...code.matchAll(/^\s*it\(/gm)].length
+    }
+    assert.equal(claimed, actual, `README says ${claimed} tests; there are ${actual}`)
+  })
+
+  it('lists exactly the tools the server registers', async () => {
+    const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
+    const server = await readFile(join(SRC, 'server.mjs'), 'utf8')
+    const registered = [...server.matchAll(/^\s*name: '([a-z_]+)',$/gm)].map((m) => m[1])
+    assert.equal(registered.length, 9)
+    for (const name of registered) {
+      assert.ok(readme.includes(`\`${name}\``), `README does not document ${name}`)
+    }
+  })
+})

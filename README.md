@@ -124,7 +124,7 @@ through a symlinked parent is caught before the write rather than after it.
 
 ## What the tests assert
 
-`npm test` runs 73 tests. The ones worth knowing about:
+`npm test` runs 76 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side.
@@ -136,7 +136,8 @@ through a symlinked parent is caught before the write rather than after it.
   subprocess, or reads any environment variable other than
   `SHIELDFIVE_MCP_ROOTS`.
 - A real MCP client over a real stdio transport sees nine tools and no vault
-  tool.
+  tool, including when the server is started through a symlink the way npm
+  installs it.
 
 The network assertion has a limit worth stating: it proves nothing in `src/`
 reaches the network. It does not prove the dependency tree is network-free —
