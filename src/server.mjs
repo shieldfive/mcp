@@ -21,6 +21,9 @@
 // up. It will not guess, either — matching a filename and a size against a
 // vault listing is how a tool deletes the only copy of something.
 
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -258,11 +261,26 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   return server
 }
 
-// `import.meta.main` is Node 24+; the realpath comparison is the portable form.
-const invokedDirectly =
-  process.argv[1] && (await import('node:url')).pathToFileURL(process.argv[1]).href === import.meta.url
+/**
+ * Is this module the program, rather than something someone imported?
+ *
+ * Both sides must be realpath'd. npm installs the `bin` as a SYMLINK — argv[1]
+ * is `node_modules/.bin/shieldfive-mcp` while `import.meta.url` is the resolved
+ * `node_modules/@shieldfive/mcp/src/server.mjs`. Comparing them unresolved is
+ * false for every installed copy, so the server exits silently the moment it is
+ * run the way an actual user runs it. `import.meta.main` would avoid this but
+ * is Node 24+, and this package supports 20.
+ */
+function isMain() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
 
-if (invokedDirectly) {
+if (isMain()) {
   main().catch((err) => {
     log('fatal:', err?.stack ?? String(err))
     process.exit(1)

@@ -5,6 +5,9 @@
 // entry point and talks to it with the real client.
 
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, symlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -107,5 +110,32 @@ describe('MCP protocol', () => {
     const instructions = client.getInstructions()
     assert.match(instructions, /no ShieldFive credential/i)
     assert.match(instructions, /backed up/i)
+  })
+
+  it('STARTS WHEN INVOKED THROUGH A SYMLINK, as npm installs it', async () => {
+    // npm links `bin` into node_modules/.bin, so argv[1] is the symlink while
+    // import.meta.url is the resolved real path. Comparing them unresolved is
+    // false for every installed copy, and the server exits silently — working
+    // perfectly from a source checkout and not at all once published. This is
+    // the only invocation that catches it.
+    const linkDir = await mkdtemp(join(tmpdir(), 'sf-mcp-bin-'))
+    const link = join(linkDir, 'shieldfive-mcp')
+    await symlink(ENTRY, link)
+
+    const viaLink = new Client({ name: 'via-link', version: '1.0.0' })
+    try {
+      await viaLink.connect(
+        new StdioClientTransport({
+          command: process.execPath,
+          args: [link, tree.path('vault')],
+          stderr: 'pipe',
+        }),
+      )
+      const { tools } = await viaLink.listTools()
+      assert.equal(tools.length, 9, 'the server must start when run through its bin symlink')
+    } finally {
+      await viaLink.close().catch(() => {})
+      await rm(linkDir, { recursive: true, force: true })
+    }
   })
 })
