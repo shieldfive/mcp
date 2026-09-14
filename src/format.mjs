@@ -2,7 +2,7 @@
 //
 // Every tool returns structured JSON as its payload. These exist so the
 // human-readable summary line on top of that JSON is consistent, and so byte
-// counts are never rendered by ad-hoc arithmetic in nine different files.
+// counts are never rendered by ad-hoc arithmetic at any of the 24 call sites.
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 

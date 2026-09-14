@@ -41,9 +41,9 @@ Initial release.
   across all roots rather than per root.
 - The hidden-entry check ran on the dirent before `lstat`, so a dot-named symlink
   was counted as hidden and never reached the symlink branch.
-- Files with a link count above one are counted and surfaced. `realpath` resolves
-  symlinks but not hardlinks, so containment cannot see a second name outside the
-  roots; reporting it is the honest response.
+- Files with a link count above one are counted and reported in scan warnings.
+  `realpath` resolves symlinks but not hardlinks, so containment cannot see a
+  second name for the same inode outside the roots.
 - Request cancellation is plumbed through to the walk and to hashing. A cancelled
   scan previously ran to completion.
 - A cross-device directory move is transactional. It stages the copy beside the
@@ -59,13 +59,12 @@ Initial release.
 
 ### Notes
 
-- **This version cannot see a ShieldFive vault**, and that is the design rather
-  than an omission. The vault API accepts only a full account JWT, which also
-  opens the wrapped-root-key route and every content download and cannot be
-  scoped down. Holding one would make the content boundary a matter of restraint
-  instead of capability. Vault tools wait for a scoped, metadata-only key.
-  The reasoning is set out in `docs/mcp-v1-step0-discovery.md` in
-  `shieldfive/web`.
+- **This version cannot see a ShieldFive vault.** The vault API accepts only a
+  full account JWT, which also opens the wrapped-root-key route and every
+  content download, and cannot be scoped down. Holding one would make the
+  content boundary a matter of restraint instead of capability. Vault tools wait
+  for a scoped, metadata-only key. The reasoning is set out in
+  `docs/mcp-v1-step0-discovery.md` in `shieldfive/web`.
 - No network module is imported, `fetch` is never called, no subprocess is
   spawned, and `SHIELDFIVE_MCP_ROOTS` is the only environment variable read.
   Each of those is asserted by a test rather than only claimed here. The

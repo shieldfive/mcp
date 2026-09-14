@@ -1,9 +1,9 @@
 // Path containment — the security core of this server.
 //
-// Every path that reaches the filesystem passes through here first. The rule is
-// simple and there is exactly one of it: a path is usable only if its REAL path,
-// with every symlink resolved, sits inside one of the roots the user configured
-// at startup. Nothing else grants access, and there is no override flag.
+// Every path that reaches the filesystem passes through here first. One rule:
+// a path is usable only if its real path, with every symlink resolved, sits
+// inside one of the roots the user configured at startup. Nothing else grants
+// access, and there is no override flag.
 //
 // Why realpath rather than string prefixing. A string check on the path the
 // caller supplied is defeated by `..`, and a check after `path.resolve` is still

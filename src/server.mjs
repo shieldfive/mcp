@@ -17,9 +17,9 @@
 // them at all. See docs/mcp-v1-step0-discovery.md in shieldfive/web for the
 // full argument, and README.md § "What this cannot do" for the consequences.
 //
-// The cost is honest: v1 cannot tell you whether a local file is already backed
-// up. It will not guess, either — matching a filename and a size against a
-// vault listing is how a tool deletes the only copy of something.
+// The cost: v1 cannot tell you whether a local file is already backed up. It
+// will not guess either, because matching a filename and a size against a vault
+// listing is how a tool deletes the only copy of something.
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

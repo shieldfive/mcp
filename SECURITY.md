@@ -22,20 +22,20 @@ already public, and how you would like to be credited.
 | Severity | Acknowledged | First substantive reply | Fix target |
 |---|---|---|---|
 | Critical — data loss, or reads/writes outside the configured roots | 1 working day | 3 working days | 7 days |
-| High | 2 working days | 5 working days | 30 days |
-| Medium / Low | 5 working days | 10 working days | next release |
+| High — the `confirm: true` gate failing open, or a claim in the README the code does not honour | 2 working days | 5 working days | 30 days |
+| Medium / Low — everything else, including a result that is wrong rather than unsafe | 5 working days | 10 working days | next release |
 
 **There is no bug bounty.** ShieldFive ran one until 2026-07; it closed, and
 `/security/bug-bounty` redirects to the security page. Reports are answered and
-credited if you want credit, and they are not paid. That is a complete answer,
-stated here so nobody spends time on the assumption that it is otherwise.
+credited on request. They are not paid.
 
 ### Safe harbour
 
-Research conducted in good faith against your own installation, staying within
-your own files and the limits below, will not be treated as a hostile act. Do
-not access data belonging to anyone else, do not degrade a service, and give us
-a reasonable window before publishing.
+This server runs on your machine against your own files, so there is no service
+to degrade and nobody else's data to reach. Research against your own
+installation is welcome and we will not pursue legal action over it. Give us 90
+days from your first report before publishing, or less if we have already
+shipped the fix.
 
 ## Scope
 
@@ -73,8 +73,6 @@ has.
 
 ## Known limits
 
-Stated because a threat model that lists only what it handles is misleading.
-
 - **Time-of-check to time-of-use.** Containment resolves a path and then acts on
   it. An attacker who can replace a directory with a symlink between those two
   steps defeats it. The window is kept narrow — the destination is re-resolved
@@ -91,9 +89,8 @@ Stated because a threat model that lists only what it handles is misleading.
   `SHIELDFIVE_MCP_ROOTS`, and that is asserted. It does not follow that other
   variables are absent from the process: if the user exported `SF_PASSWORD` for
   `@shieldfive/cli` in the shell that launched their MCP client, it is in this
-  process's address space, as it is in every other tool that client spawns. What
-  this package guarantees is that it never reads, stores, forwards or spawns
-  anything with it.
+  process's address space, as it is in every other tool that client spawns. This package never reads it, never stores it, and
+  spawns no subprocess that could inherit it.
 - **The no-network assertion covers this package's source, not its dependency
   tree.** `@modelcontextprotocol/sdk` ships HTTP transports for other people's
   servers. This one imports the stdio transport and no HTTP transport, which is

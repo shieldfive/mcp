@@ -7,7 +7,7 @@
 //    resolves the paths, checks containment, reports exactly what it WOULD do —
 //    including what it would displace — and returns.
 //
-// 2. NOTHING IS EVER UNLINKED. Not by trash_local, and not by an overwriting
+// 2. Nothing is ever unlinked. Not by trash_local, and not by an overwriting
 //    move. An earlier version of move_local called
 //    `rm(finalPath, {recursive: true, force: true})` when overwrite was set,
 //    which made "this server deletes nothing" false in the one case where it
@@ -61,7 +61,11 @@ async function measure(path) {
           files++
           bytes += s.size
         } catch {
-          /* unreadable entries are reported by the scanning tools, not here */
+          // Undercounts silently, as does the readdir catch above, which skips
+          // a whole subtree. These figures go into the move and trash previews
+          // the user approves, so a permission-denied subtree makes a move look
+          // smaller than it is. It never makes one look safer: nothing is
+          // deleted either way.
         }
       }
     }
@@ -179,7 +183,7 @@ export async function moveLocal(ctx, args) {
   const source = await resolveExisting(ctx.roots, args.source, { what: 'source' })
   const dest = await resolveTarget(ctx.roots, args.destination, { what: 'destination' })
 
-  // Resolve the FINAL path before any guard runs. Checking the destination
+  // Resolve the final path before any guard runs. Checking the destination
   // argument alone missed the worst case: moving /root/sub onto its parent
   // /root gives a final path of /root/sub — the source itself — which the old
   // guard passed and the old overwrite branch then deleted.

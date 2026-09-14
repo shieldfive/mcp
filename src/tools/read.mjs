@@ -1,4 +1,4 @@
-// The five read-only tools. None of these writes anything.
+// The read-only tools. Mutations live in mutate.mjs.
 
 import { basename, dirname } from 'node:path'
 
@@ -350,7 +350,7 @@ export async function findDuplicates(ctx, args) {
     warnings.push(
       `The hashing budget of ${budget.toLocaleString()} reads was reached, so ` +
         `${skippedGroups.length} same-size group(s) covering up to ` +
-        `${formatBytes(unchecked)} were NEVER HASHED and are absent below. This result ` +
+        `${formatBytes(unchecked)} were never hashed and are absent below. This result ` +
         'is a lower bound — raise max_files_hashed for a complete answer.',
     )
   }

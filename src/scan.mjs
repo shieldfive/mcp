@@ -21,7 +21,14 @@ export const TRASH_DIR_NAME = '.shieldfive-mcp-trash'
 /** Entries whose names are noise in every report. */
 const ALWAYS_SKIP = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini'])
 
-/** Directories that are build output or package caches, not user data. */
+/**
+ * Directories excluded from every walk: build output, package caches and VCS
+ * metadata.
+ *
+ * `build`, `dist` and `target` are ordinary folder names outside a code tree,
+ * so this list can hide real user data. Every exclusion is counted and reported
+ * in the scan warnings, and there is no way to override the list yet.
+ */
 const DEFAULT_SKIP_DIRS = new Set([
   'node_modules',
   '.git',
@@ -47,9 +54,22 @@ const DEFAULT_SKIP_DIRS = new Set([
 ])
 
 /**
- * Walk one directory tree.
+ * Walk one directory tree, breadth-first.
  *
- * @returns {Promise<{files: Array, stats: object}>}
+ * Every field of `stats` is read by name elsewhere: scanWarnings() in format.mjs
+ * turns the counters into the sentences a user sees, and read.mjs copies a few
+ * into its payloads. Adding a field is safe; renaming one silently drops a
+ * warning.
+ *
+ * @returns {Promise<{
+ *   files: Array<{path, relativePath, size, mtimeMs, extension, hardlinked}>,
+ *   stats: {
+ *     directories: number, symlinksSkipped: number, hiddenSkipped: number,
+ *     skippedDirectories: string[], hardlinked: string[],
+ *     unreadable: Array<{path, code}>, depthLimited: string[],
+ *     truncated: boolean, maxFiles: number,
+ *   },
+ * }>}
  */
 export async function walk(
   startRealPath,
@@ -104,7 +124,7 @@ export async function walk(
 
         const full = join(dir, entry.name)
 
-        // lstat FIRST, before any name-based branch. The hidden check used to
+        // lstat before any name-based branch. The hidden check used to
         // run on the dirent, so a dot-named symlink was consumed as "hidden"
         // and never reached the symlink branch -- two links on disk, one
         // reported. Trust lstat, not the dirent flags: a dirent can report
