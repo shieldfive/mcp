@@ -32,12 +32,13 @@ async function measure(path) {
   try {
     st = await stat(path)
   } catch {
-    return { files: 0, bytes: 0, kind: 'missing' }
+    return { files: 0, bytes: 0, kind: 'missing', symlinks: [] }
   }
-  if (st.isFile()) return { files: 1, bytes: st.size, kind: 'file' }
+  if (st.isFile()) return { files: 1, bytes: st.size, kind: 'file', symlinks: [] }
 
   let files = 0
   let bytes = 0
+  const symlinks = []
   const queue = [path]
   while (queue.length) {
     const dir = queue.shift()
@@ -49,7 +50,10 @@ async function measure(path) {
     }
     for (const e of entries) {
       const full = join(dir, e.name)
-      if (e.isSymbolicLink()) continue
+      if (e.isSymbolicLink()) {
+        symlinks.push(full)
+        continue
+      }
       if (e.isDirectory()) queue.push(full)
       else if (e.isFile()) {
         try {
@@ -62,7 +66,7 @@ async function measure(path) {
       }
     }
   }
-  return { files, bytes, kind: 'directory' }
+  return { files, bytes, kind: 'directory', symlinks }
 }
 
 /** rename(2), falling back to copy+remove when the move crosses a device. */
@@ -81,9 +85,20 @@ async function relocate(from, to) {
     return 'copy+remove'
   }
 
-  // Copy the whole tree BEFORE removing any of it. Interleaving the two means a
-  // failure partway leaves the source split across both locations.
-  await copyTree(from, to)
+  // Stage the copy beside the target and rename it into place only once the
+  // whole tree has landed. Copying straight into `to` left a partial tree there
+  // when anything threw mid-walk -- and the source was already torn in half by
+  // the older interleaved copy+remove. Now a failure leaves the source
+  // untouched and nothing at the destination.
+  const staging = `${to}.shieldfive-mcp-incoming`
+  await rm(staging, { recursive: true, force: true })
+  try {
+    await copyTree(from, staging)
+  } catch (err) {
+    await rm(staging, { recursive: true, force: true })
+    throw err
+  }
+  await rename(staging, to)
   await rm(from, { recursive: true })
   return 'copy+remove'
 }
@@ -198,8 +213,28 @@ export async function moveLocal(ctx, args) {
   }
 
   const size = await measure(source.realPath)
-  const displaced = collision ? await measure(finalPath) : { files: 0, bytes: 0, kind: 'none' }
+  const displaced = collision
+    ? await measure(finalPath)
+    : { files: 0, bytes: 0, kind: 'none', symlinks: [] }
   const stamp = trashStamp(ctx.now())
+
+  // A symlink inside the source cannot survive a cross-device move, and
+  // relocate() throws when it reaches one. Refusing HERE rather than there is
+  // the difference between a clean refusal and one raised after the existing
+  // destination has already been displaced. Checked for every move, not only
+  // cross-device ones, because whether two paths share a device is not
+  // something the caller can see and a refusal that depends on it is worse
+  // than one that does not.
+  if (size.symlinks?.length && collision) {
+    throw new ToolError(
+      'symlink_in_tree',
+      `Refused before changing anything: ${source.realPath} contains ` +
+        `${size.symlinks.length} symlink(s), starting with ${size.symlinks[0]}. ` +
+        'A move that also displaces an existing destination is not attempted with ' +
+        'links in the tree, because a failure partway would leave both sides ' +
+        'disturbed. Move the links yourself, or move to a destination that is empty.',
+    )
+  }
 
   const plan = {
     action: 'move',
@@ -254,7 +289,35 @@ export async function moveLocal(ctx, args) {
   }
 
   await mkdir(dirname(finalPath), { recursive: true })
-  const method = await relocate(source.realPath, finalPath)
+  let method
+  try {
+    method = await relocate(source.realPath, finalPath)
+  } catch (err) {
+    // The destination was displaced a moment ago and the replacement did not
+    // arrive. Put it back rather than leaving the user with an empty
+    // destination and an error that reads as though nothing happened.
+    if (displacedTo) {
+      try {
+        await relocate(displacedTo, finalPath)
+        throw new ToolError(
+          'move_failed_destination_restored',
+          `The move failed (${err.message}). The item that was at ${finalPath} has ` +
+            'been put back, and the source is untouched.',
+        )
+      } catch (restoreErr) {
+        if (restoreErr instanceof ToolError && restoreErr.code === 'move_failed_destination_restored') {
+          throw restoreErr
+        }
+        throw new ToolError(
+          'move_failed_destination_in_trash',
+          `The move failed (${err.message}) and the item that was at ${finalPath} ` +
+            `could not be put back (${restoreErr.message}). It is NOT lost -- it is at ` +
+            `${displacedTo} and recorded in the manifest beside it.`,
+        )
+      }
+    }
+    throw err
+  }
 
   return toolResult(
     `Moved ${size.kind} ${source.realPath} → ${finalPath} (${formatBytes(size.bytes)}).` +

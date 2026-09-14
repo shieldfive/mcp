@@ -129,7 +129,7 @@ through a symlinked parent is caught before the write rather than after it.
 
 ## What the tests assert
 
-`npm test` runs 95 tests. The ones worth knowing about:
+`npm test` runs 98 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side.

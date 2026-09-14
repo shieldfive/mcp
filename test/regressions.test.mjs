@@ -339,3 +339,97 @@ describe('trash_local robustness', () => {
     assert.equal(JSON.parse(await readFile(data.manifests[0], 'utf8')).items.length, 1)
   })
 })
+
+describe('an overwriting move must not disturb both sides when it fails', () => {
+  it('REFUSES a symlinked source before displacing the destination', async () => {
+    // The cross-device path throws symlink_in_tree mid-walk. Previously that
+    // happened AFTER the existing destination had been removed, so a call that
+    // returned a refusal had already destroyed five files.
+    const t = await tree({
+      'in/payload/a-first.txt': 'a',
+      'in/payload/z-last.txt': 'z',
+      'in/real/target.txt': 'target',
+      'in/payload/m-link': { symlinkTo: 'in/real' },
+      'in/dest/payload/irreplaceable-1.txt': 'keep me',
+      'in/dest/payload/irreplaceable-2.txt': 'keep me too',
+    })
+    const ctx = await makeCtx([t.path('in')])
+
+    await assert.rejects(
+      () =>
+        moveLocal(ctx, {
+          source: t.path('in/payload'),
+          destination: t.path('in/dest'),
+          overwrite: true,
+          confirm: true,
+        }),
+      (e) => e.code === 'symlink_in_tree',
+    )
+
+    // Both sides untouched.
+    assert.equal(await readFile(t.path('in/dest/payload/irreplaceable-1.txt'), 'utf8'), 'keep me')
+    assert.equal(await readFile(t.path('in/dest/payload/irreplaceable-2.txt'), 'utf8'), 'keep me too')
+    assert.equal(await readFile(t.path('in/payload/a-first.txt'), 'utf8'), 'a')
+    assert.equal(await readFile(t.path('in/payload/z-last.txt'), 'utf8'), 'z')
+  })
+
+  it('leaves no staging directory behind on a successful move', async () => {
+    const t = await tree({ 'in/src/a.txt': 'a', 'in/dest/.keep': '' })
+    const ctx = await makeCtx([t.path('in')])
+    await moveLocal(ctx, {
+      source: t.path('in/src'),
+      destination: t.path('in/dest'),
+      confirm: true,
+    })
+    assert.equal(await gone(t.path('in/dest/src.shieldfive-mcp-incoming')), true)
+    assert.equal(await readFile(t.path('in/dest/src/a.txt'), 'utf8'), 'a')
+  })
+
+  it('stages a cross-device directory copy and renames it into place', async () => {
+    // Real EXDEV needs a second volume. Where one can be made cheaply, use it;
+    // otherwise skip loudly rather than pretend this path is covered.
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const run = promisify(execFile)
+
+    if (process.platform !== 'darwin') {
+      console.error('[skip] cross-device move test needs a second volume (darwin only here)')
+      return
+    }
+
+    let disk
+    try {
+      const { stdout } = await run('hdiutil', ['attach', '-nomount', 'ram://40960'])
+      disk = stdout.trim()
+      await run('diskutil', ['eraseVolume', 'APFS', 'SFMCPX', disk])
+    } catch (err) {
+      if (disk) await run('hdiutil', ['detach', disk]).catch(() => {})
+      console.error(`[skip] could not create a scratch volume: ${err.message}`)
+      return
+    }
+
+    const other = '/Volumes/SFMCPX'
+    try {
+      const t = await tree({ 'in/tree/a.txt': 'a', 'in/tree/deep/b.txt': 'b' })
+      await mkdir(join(other, 'dst'), { recursive: true })
+      const ctx = await makeCtx([t.path('in'), other])
+
+      const srcDev = (await stat(t.path('in/tree'))).dev
+      const dstDev = (await stat(join(other, 'dst'))).dev
+      assert.notEqual(srcDev, dstDev, 'the two roots must really be on different devices')
+
+      const res = await moveLocal(ctx, {
+        source: t.path('in/tree'),
+        destination: join(other, 'dst'),
+        confirm: true,
+      })
+      assert.equal(payload(res).method, 'copy+remove')
+      assert.equal(await readFile(join(other, 'dst/tree/a.txt'), 'utf8'), 'a')
+      assert.equal(await readFile(join(other, 'dst/tree/deep/b.txt'), 'utf8'), 'b')
+      assert.equal(await gone(t.path('in/tree')), true)
+      assert.equal(await gone(join(other, 'dst/tree.shieldfive-mcp-incoming')), true)
+    } finally {
+      await run('hdiutil', ['detach', disk, '-force']).catch(() => {})
+    }
+  })
+})

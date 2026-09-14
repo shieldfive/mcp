@@ -46,6 +46,14 @@ Initial release.
   roots; reporting it is the honest response.
 - Request cancellation is plumbed through to the walk and to hashing. A cancelled
   scan previously ran to completion.
+- A cross-device directory move is transactional. It stages the copy beside the
+  target and renames it into place only once the whole tree has landed, so a
+  failure mid-walk leaves the source untouched and nothing at the destination.
+  Previously an interleaved copy+remove tore the source in half while the
+  already-removed destination was gone for good. A move that would both displace
+  an existing destination and carry a symlink in its tree is now refused before
+  anything is displaced, and if the replacement fails after a displacement the
+  displaced item is put back.
 - Path arguments are capped at 4096 characters. An oversized path was reflected
   verbatim into the error message and into the model's context.
 
