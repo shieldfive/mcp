@@ -1,0 +1,172 @@
+# @shieldfive/mcp
+
+A [Model Context Protocol](https://modelcontextprotocol.io) server that lets an
+AI assistant manage files on your own machine: find duplicates by content, find
+what is large or stale, and reorganise it.
+
+It holds no ShieldFive credential, makes no network request, and does not import
+`@shieldfive/crypto`. Those are not gaps to be filled in a later version. They
+are the security boundary, and the section below explains what they cost you.
+
+```sh
+npx @shieldfive/mcp ~/Documents ~/Downloads
+```
+
+## Install
+
+Requires Node 20 or newer.
+
+```sh
+npm install -g @shieldfive/mcp
+```
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "shieldfive": {
+      "command": "npx",
+      "args": ["-y", "@shieldfive/mcp", "/Users/you/Documents", "/Volumes/Archive"]
+    }
+  }
+}
+```
+
+Every path after the package name is a **root**. The server can read and write
+inside those directories and nowhere else. There is no default root and no
+override flag — a server started with no roots will refuse every call and tell
+you so.
+
+You can use `SHIELDFIVE_MCP_ROOTS` instead, with your platform's path separator
+(`:` on macOS and Linux, `;` on Windows):
+
+```sh
+SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp
+```
+
+## What this cannot do
+
+Read this before the tool list. It is the shape of the product, not a footnote.
+
+**It cannot see your ShieldFive vault.** Not the file list, not the names, not
+the sizes. It will not tell you whether a local file is already backed up,
+because it has no way to know and it is not permitted to guess.
+
+That is a deliberate trade. The alternative was to authenticate with a full
+ShieldFive account JWT — the only credential the vault API accepts. That token
+also opens `/api/vault-key`, which returns your wrapped root key and an ML-KEM
+public key, and every content-download route, and **none of it can be scoped
+away**, because no scoped vault credential exists. A server holding that token
+would be *declining* to read your files rather than being *unable* to, with the
+difference resting on a client-side denylist and on nothing else on your machine
+reading the token file. A server holding no token cannot read them at all.
+
+When a scoped, metadata-only key exists, vault tools can be added behind it.
+Until then this is a local file manager that happens to be published by the
+people who make an encrypted vault.
+
+**It will never infer that two files are the same from their names and sizes.**
+Duplicate detection reads both files and compares a full SHA-256 of their
+contents. Name matching is how a deduplication tool deletes the only copy of
+something, and the cost of getting it right is a few seconds of disk I/O.
+
+**It deletes nothing.** `trash_local` *moves* files into a
+`.shieldfive-mcp-trash` directory inside the root they came from, and writes a
+`manifest.json` recording where each one was. **No disk space is freed** until
+you delete that directory yourself, in your own file manager, with your own
+undo. The tool says so in its own output so the assistant cannot report the
+space as reclaimed.
+
+**Every tool that changes anything does nothing by default.** Call it without
+`confirm: true` and it resolves the paths, checks containment, reports exactly
+what it would do, and stops. The preview runs the same code as the action, so a
+plan that reports a refusal is a refusal.
+
+## Tools
+
+| Tool | Reads | Writes |
+|---|---|---|
+| `list_local` | files, sizes, dates | — |
+| `find_duplicates` | file contents (SHA-256) | — |
+| `find_large_files` | sizes | — |
+| `find_old_files` | modification times | — |
+| `storage_summary` | sizes, by extension and directory | — |
+| `move_local` | — | moves a file or folder |
+| `rename_local` | — | renames in place |
+| `create_local_folder` | — | creates a directory |
+| `trash_local` | — | moves into the trash directory |
+
+`find_old_files` reports modification time, which is a weak signal: some copy
+operations reset it to the copy date, and an untouched file is not an unwanted
+one. The tool says this in its own result rather than leaving the assistant to
+present a shortlist as a verdict.
+
+## How containment works
+
+Every path an assistant supplies is resolved with `realpath` — following every
+symlink — before anything touches it, and the result must sit inside a
+configured root. A separator-aware boundary check means `/data/roots-evil` does
+not match the root `/data/root`.
+
+That ordering is the point. A string check on the supplied path is defeated by
+`..`; a check after `path.resolve` is still defeated by a symlink, because
+`/allowed/link -> /etc` resolves to a string under `/allowed` while reading
+`/etc`. Resolving links first closes both, and it is why the directory walk uses
+`lstat` and never follows a link — a link the walk traversed would be a path
+containment never got to see.
+
+Destinations that do not exist yet — a move target, a new folder — are checked
+by resolving the nearest existing ancestor and re-appending the rest, so writing
+through a symlinked parent is caught before the write rather than after it.
+
+## What the tests assert
+
+`npm test` runs 73 tests. The ones worth knowing about:
+
+- A symlink pointing out of a root is refused, on both the read and the write
+  side.
+- Two files with the same name and the same size but different contents are
+  **not** reported as duplicates.
+- `trash_local` leaves the bytes readable at their new location and reports
+  `space_freed_bytes: 0`.
+- No file under `src/` imports a networking module, calls `fetch`, spawns a
+  subprocess, or reads any environment variable other than
+  `SHIELDFIVE_MCP_ROOTS`.
+- A real MCP client over a real stdio transport sees nine tools and no vault
+  tool.
+
+The network assertion has a limit worth stating: it proves nothing in `src/`
+reaches the network. It does not prove the dependency tree is network-free —
+`@modelcontextprotocol/sdk` ships HTTP transports for other people's servers,
+and claiming otherwise would be false. What closes that gap is that `server.mjs`
+imports the stdio transport and no HTTP one, which is also asserted.
+
+## Limits
+
+- **Time-of-check to time-of-use.** Containment resolves a path and then acts on
+  it. An attacker who can replace a directory with a symlink in the window
+  between those two steps can defeat it. This is inherent to path-based checks
+  without `openat2`-style primitives, which Node does not expose. It matters if
+  something hostile already has write access inside your roots, at which point
+  it has that access with or without this server.
+- **Sizes are file-content sizes.** They exclude directory overhead and ignore
+  filesystem compression, sparse files and APFS clones, so totals will not match
+  a disk utility exactly.
+- **Scans are capped** at 200,000 files and 64 directory levels by default. When
+  a cap is hit the result says so, in the summary line as well as in a field.
+  A truncated listing read as a complete one is how a wrong conclusion gets
+  drawn confidently.
+- **Windows is untested.** The code uses no POSIX-only API, and path handling
+  goes through `node:path`, but nobody has run it there.
+
+## Security
+
+Report vulnerabilities to `security@shieldfive.com`. See
+[SECURITY.md](SECURITY.md).
+
+## Licence
+
+Apache-2.0.

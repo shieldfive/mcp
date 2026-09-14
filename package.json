@@ -1,0 +1,21 @@
+{
+  "name": "@shieldfive/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Model Context Protocol server for local file management. Finds duplicates, large files and stale files across the drives you allow it, and reorganises them. Holds no ShieldFive credential and makes no network calls.",
+  "license": "Apache-2.0",
+  "author": "Cho Garcia <security@shieldfive.com>",
+  "homepage": "https://github.com/shieldfive/mcp",
+  "repository": { "type": "git", "url": "git+https://github.com/shieldfive/mcp.git" },
+  "bugs": { "url": "https://github.com/shieldfive/mcp/issues" },
+  "keywords": ["shieldfive", "mcp", "model-context-protocol", "claude", "filesystem", "duplicate-files", "disk-space"],
+  "bin": { "shieldfive-mcp": "src/server.mjs" },
+  "publishConfig": { "access": "public" },
+  "files": ["src", "README.md", "SECURITY.md", "CHANGELOG.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
+  }
+}
