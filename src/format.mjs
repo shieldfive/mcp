@@ -10,12 +10,24 @@ const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 export function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return 'unknown'
   if (bytes < 1000) return `${bytes} B`
+
   let value = bytes
   let unit = 0
   while (value >= 1000 && unit < UNITS.length - 1) {
     value /= 1000
     unit++
   }
+
+  // Promote AFTER rounding, not before. The loop tests the raw quotient while
+  // the display rounds to zero decimals above 100, so 999,999 bytes rendered as
+  // "1000 KB" rather than "1.0 MB" -- and a duplicate report reading
+  // "1000 MB reclaimable" is a unit nobody uses.
+  const rounded = value >= 100 ? Math.round(value) : value
+  if (rounded >= 1000 && unit < UNITS.length - 1) {
+    value = rounded / 1000
+    unit++
+  }
+
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${UNITS[unit]}`
 }
 
@@ -77,6 +89,32 @@ export function scanWarnings(perRoot) {
   const links = perRoot.reduce((n, r) => n + r.symlinksSkipped, 0)
   if (links) {
     warnings.push(`${links} symlink(s) skipped; this server never follows them.`)
+  }
+
+  // These were recorded by the walk and then dropped on the floor. A
+  // storage_summary that omits node_modules, dist and every dotfile can be
+  // orders of magnitude under the real figure while reporting warnings: [].
+  const hidden = perRoot.reduce((n, r) => n + r.hiddenSkipped, 0)
+  if (hidden) {
+    warnings.push(
+      `${hidden} hidden item(s) excluded from these totals. Pass include_hidden: true ` +
+        'to count them.',
+    )
+  }
+  const skippedDirs = perRoot.flatMap((r) => r.skippedDirectories ?? [])
+  if (skippedDirs.length) {
+    warnings.push(
+      `${skippedDirs.length} build/cache director(ies) excluded and NOT counted in ` +
+        `these totals (${skippedDirs.slice(0, 3).map((d) => d.split('/').pop()).join(', ')}` +
+        `${skippedDirs.length > 3 ? ', …' : ''}). They are often the largest thing on disk.`,
+    )
+  }
+  const hardlinked = perRoot.reduce((n, r) => n + (r.hardlinked?.length ?? 0), 0)
+  if (hardlinked) {
+    warnings.push(
+      `${hardlinked} file(s) are hardlinked, so the same bytes may be counted here and ` +
+        'also reachable under another name outside these roots.',
+    )
   }
   const depth = perRoot.reduce((n, r) => n + r.depthLimited.length, 0)
   if (depth) {

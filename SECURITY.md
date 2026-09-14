@@ -1,119 +1,105 @@
-# Security Policy
+# Security policy
 
-ShieldFive takes the security of `@shieldfive/mcp` seriously. This document
-describes how to report a vulnerability, what we commit to, and the safe-harbor
-terms for security researchers.
+`@shieldfive/mcp` runs on a user's own machine, reads and writes files in
+directories they name, and is driven by an AI assistant. Its security properties
+are mostly about containment and about not holding things it does not need.
 
 ## Reporting a vulnerability
 
-**Do not open a public GitHub issue for security reports.** Instead, email us
-directly:
+**Do not open a public GitHub issue for a security report.** Email
+`security@shieldfive.com`.
 
-- **Email:** `security@shieldfive.com`
-- **PGP key:** Not yet published. Encrypt with a temporary key on request, or
-  send in plaintext — we would rather know about the issue than have it sit in
-  your inbox.
+There is no PGP key published. Encrypt with a temporary key on request, or send
+in plaintext — a report that arrives is worth more than one that waits for key
+exchange.
 
-If you cannot encrypt the report, send it in plaintext anyway. We will follow up
-over an encrypted channel.
+Include what you have: a description and its impact, steps to reproduce, the
+package version and your Node version and operating system, whether the issue is
+already public, and how you would like to be credited.
 
-### What to include
+### What to expect
 
-1. A description of the vulnerability and its impact.
-2. Steps to reproduce, including a minimal proof-of-concept if possible.
-3. The server version and runtime environment (Node version, operating system).
-4. Whether the issue is already public or has been disclosed elsewhere.
-5. Your name and a way to contact you (or "anonymous" if you prefer).
+| Severity | Acknowledged | First substantive reply | Fix target |
+|---|---|---|---|
+| Critical — data loss, or reads/writes outside the configured roots | 1 working day | 3 working days | 7 days |
+| High | 2 working days | 5 working days | 30 days |
+| Medium / Low | 5 working days | 10 working days | next release |
 
-## Our commitments
+**There is no bug bounty.** ShieldFive ran one until 2026-07; it closed, and
+`/security/bug-bounty` redirects to the security page. Reports are answered and
+credited if you want credit, and they are not paid. That is a complete answer,
+stated here so nobody spends time on the assumption that it is otherwise.
 
-| Severity                     | Acknowledgement | Initial response | Patch target |
-| ---------------------------- | :-------------: | :--------------: | :----------: |
-| Critical (key/plaintext leak)|    24 hours     |     48 hours     |   7 days     |
-| High (integrity bypass)      |    48 hours     |     5 days       |   14 days    |
-| Medium (DoS, info leakage)   |    72 hours     |     7 days       |   30 days    |
-| Low (defense-in-depth)       |    7 days       |     14 days      |   90 days    |
+### Safe harbour
 
-We will:
-
-- Acknowledge your report within the windows above.
-- Keep you informed of our investigation.
-- Credit you in the release notes (with your permission, or anonymously).
-- Coordinate public disclosure with you, defaulting to a 90-day window.
-- Publish a CVE when appropriate.
-
-We will *not*:
-
-- Take legal action against researchers acting in good faith (see Safe Harbor).
-- Demand silence as a condition of bounty or credit.
-
-## Safe Harbor
-
-Security research conducted in accordance with this policy is authorized. We will
-not pursue civil claims or refer law enforcement against researchers who:
-
-1. Make a good-faith effort to avoid privacy violations, data destruction, and
-   service interruption.
-2. Do not access, modify, or exfiltrate data belonging to anyone other than
-   themselves or research accounts.
-3. Report the vulnerability promptly through this policy's channels.
-4. Do not exploit the vulnerability beyond what is necessary to confirm it.
-5. Do not publicly disclose before we have had a reasonable opportunity to
-   remediate (the timelines above).
-
-## Bug bounty
-
-ShieldFive operates a paid bug bounty program. For current scope, reward tiers,
-rules of engagement, and submission instructions, see
-https://shieldfive.com/security/bug-bounty.
+Research conducted in good faith against your own installation, staying within
+your own files and the limits below, will not be treated as a hostile act. Do
+not access data belonging to anyone else, do not degrade a service, and give us
+a reasonable window before publishing.
 
 ## Scope
 
-In scope: this CLI — the way it derives keys, encrypts files and filenames,
-constructs the upload proof, and transmits data. A demonstration that plaintext
-or key material can leak from this client is the highest-value report.
+In scope: this package's own source — path containment, the walk, the mutating
+tools, the trash, the MCP surface, and the claims its README makes.
 
-Out of scope for *this* repository (report elsewhere or not at all):
+Out of scope for this repository, with the right destination:
 
-- Vulnerabilities in the cryptographic core — report those against
-  [`@shieldfive/crypto`](https://github.com/shieldfive/crypto).
-- Vulnerabilities in dependencies (`@noble/*`, `@supabase/supabase-js`) — report
-  those upstream.
-- Server-side issues in the ShieldFive backend — report via the bug bounty
-  program above.
-- Attacks that require an attacker to already control the user's device.
+- The ShieldFive vault, web application and API — `security@shieldfive.com`,
+  same address, different codebase.
+- `@shieldfive/crypto` — its own repository. **This package does not depend on
+  it**, and a test asserts no `@shieldfive/*` or `@supabase/*` package is a
+  dependency.
+- `@modelcontextprotocol/sdk` and `zod`, this package's only two dependencies —
+  report upstream. A vulnerability in how *this* package uses them is in scope.
 
-## Threat model for this package
+## Threat model
 
-This server runs on the user's own machine, speaks MCP over stdio, and is driven
-by an AI assistant. The assistant is **not** trusted to choose safe paths — that
-is the point of containment — but it is trusted not to be actively adversarial,
+The assistant driving this server is **not** trusted to choose safe paths; that
+is what containment is for. It is assumed not to be actively adversarial,
 because it already runs with the user's privileges through every other tool it
 has.
 
-In scope, and what is done about each:
+| Concern | What is done | Tested |
+|---|---|---|
+| A path argument escaping the allowed roots | Every path is `realpath`-resolved before use and must land inside a configured root; separator-aware boundary test | yes |
+| A symlink inside a root pointing out of it | Resolved before the containment check; the walk uses `lstat` and never traverses a link | yes, read and write side |
+| A destination under a symlinked parent | Nearest existing ancestor resolved, remaining segments re-appended, checked before the write | yes |
+| Irreversible deletion | Nothing is unlinked. `trash_local` moves within the root; an overwriting `move_local` moves the displaced item to the trash rather than removing it | yes |
+| A partial failure losing track of moved files | The trash manifest is written after each item, not once at the end, and a partial failure reports where the moved items went | yes |
+| An assistant acting without the user seeing the plan | Mutating tools are inert without `confirm: true` and report what they would displace as well as what they would move | yes |
+| Credential exposure in this code | No credential is read or stored. `SHIELDFIVE_MCP_ROOTS` is the only environment variable read | yes |
+| Exfiltration over the network | No networking module imported, `fetch` never called; the transport is stdio | yes, for this package's source |
+| Credential exposure via a subprocess | No subprocess is spawned at all. Spawning `sf` would inherit `SF_PASSWORD` from the environment whether or not this code named it | yes |
 
-| Concern | Mitigation |
-|---|---|
-| A path argument escaping the allowed roots | Every path is `realpath`-resolved before use and must land inside a configured root. Separator-aware boundary test. Tested on both the read and the write side. |
-| A symlink inside a root pointing out of it | Resolved before the containment check; the directory walk uses `lstat` and never traverses a link. |
-| A destination under a symlinked parent | The nearest existing ancestor is resolved and the remaining segments re-appended before the write. |
-| Irreversible deletion | Nothing is unlinked. `trash_local` moves within the same root and writes a restore manifest. |
-| An assistant acting without the user seeing the plan | Mutating tools are inert without `confirm: true` and return the plan instead. |
-| Credential exposure | No credential is read, stored or inherited. `SHIELDFIVE_MCP_ROOTS` is the only environment variable this code reads, asserted by a test. |
-| Exfiltration over the network | No networking module is imported and `fetch` is never called, asserted by a test. The transport is stdio. |
-| Credential exposure via a subprocess | No subprocess is spawned. Spawning `sf` would inherit `SF_PASSWORD` from the environment whether or not this code names it, so the ban is on spawning at all. |
+## Known limits
 
-Out of scope, stated rather than implied:
+Stated because a threat model that lists only what it handles is misleading.
 
-- **Time-of-check to time-of-use.** An attacker able to swap a directory for a
-  symlink between the containment check and the filesystem call can defeat it.
-  Closing this needs `openat2`-style primitives that Node does not expose. It
-  presupposes write access inside a root, which is already a compromise of the
-  thing being protected.
-- **What the assistant does with the output.** File paths are returned to the
-  model. If a path is itself sensitive, the root it sits in should not be given
-  to this server.
-- **The dependency tree.** The no-network assertion covers this package's own
-  source. `@modelcontextprotocol/sdk` contains HTTP transports for other
-  servers; this one imports only the stdio transport, which is asserted.
+- **Time-of-check to time-of-use.** Containment resolves a path and then acts on
+  it. An attacker who can replace a directory with a symlink between those two
+  steps defeats it. The window is kept narrow — the destination is re-resolved
+  immediately before a write, rather than before the tree measurement that
+  precedes it — but it is not closed, and closing it needs `openat2`-style
+  primitives Node does not expose. It presupposes write access inside a root,
+  which is already a compromise of the thing being protected.
+- **Hardlinks are not resolved.** `realpath` follows symlinks, not hardlinks, so
+  a hardlink inside a root that references an inode also reachable outside every
+  root reads as contained, because it genuinely is one of that inode's names.
+  Files with a link count above one are counted and reported in scan warnings
+  rather than silently trusted.
+- **The environment is inherited, like any child process.** This code reads only
+  `SHIELDFIVE_MCP_ROOTS`, and that is asserted. It does not follow that other
+  variables are absent from the process: if the user exported `SF_PASSWORD` for
+  `@shieldfive/cli` in the shell that launched their MCP client, it is in this
+  process's address space, as it is in every other tool that client spawns. What
+  this package guarantees is that it never reads, stores, forwards or spawns
+  anything with it.
+- **The no-network assertion covers this package's source, not its dependency
+  tree.** `@modelcontextprotocol/sdk` ships HTTP transports for other people's
+  servers. This one imports the stdio transport and no HTTP transport, which is
+  asserted; the source scan matches import specifiers, so a computed dynamic
+  import would evade it.
+- **File paths reach the model.** If a path is itself sensitive, do not give
+  this server the root it sits in.
+- **Windows is untested.** No POSIX-only API is used and paths go through
+  `node:path`, but nobody has run it there.

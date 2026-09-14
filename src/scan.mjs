@@ -67,6 +67,7 @@ export async function walk(
     symlinksSkipped: 0,
     hiddenSkipped: 0,
     skippedDirectories: [],
+    hardlinked: [],
     unreadable: [],
     depthLimited: [],
     truncated: false,
@@ -100,15 +101,15 @@ export async function walk(
           break
         }
         if (ALWAYS_SKIP.has(entry.name)) continue
-        if (!includeHidden && entry.name.startsWith('.') && !entry.isDirectory()) {
-          stats.hiddenSkipped++
-          continue
-        }
 
         const full = join(dir, entry.name)
 
-        // Trust lstat, not the dirent flags: a dirent can report DT_UNKNOWN on
-        // some filesystems, and isSymbolicLink() must be authoritative here.
+        // lstat FIRST, before any name-based branch. The hidden check used to
+        // run on the dirent, so a dot-named symlink was consumed as "hidden"
+        // and never reached the symlink branch -- two links on disk, one
+        // reported. Trust lstat, not the dirent flags: a dirent can report
+        // DT_UNKNOWN on some filesystems, and isSymbolicLink() has to be
+        // authoritative here.
         let st
         try {
           st = await lstat(full)
@@ -122,12 +123,14 @@ export async function walk(
           continue
         }
 
+        const hidden = entry.name.startsWith('.')
+
         if (st.isDirectory()) {
           if (skipDirs.has(entry.name)) {
             stats.skippedDirectories.push(full)
             continue
           }
-          if (!includeHidden && entry.name.startsWith('.')) {
+          if (!includeHidden && hidden) {
             stats.hiddenSkipped++
             continue
           }
@@ -135,7 +138,18 @@ export async function walk(
           continue
         }
 
+        if (!includeHidden && hidden) {
+          stats.hiddenSkipped++
+          continue
+        }
+
         if (!st.isFile()) continue
+
+        // nlink > 1 means this inode is reachable by another name, possibly
+        // one outside every root. realpath resolves symlinks but not hardlinks,
+        // so containment cannot see that second name. Counting them is the
+        // honest response: it is reported, not silently trusted.
+        if (st.nlink > 1) stats.hardlinked.push(full)
 
         files.push({
           path: full,
@@ -143,6 +157,7 @@ export async function walk(
           size: st.size,
           mtimeMs: st.mtimeMs,
           extension: extname(entry.name).toLowerCase(),
+          hardlinked: st.nlink > 1,
         })
       }
     } finally {
@@ -162,12 +177,33 @@ export async function walk(
 export async function walkRoots(rootSet, options = {}) {
   const files = []
   const perRoot = []
+  const budget = options.maxFiles ?? 200_000
 
   for (const root of rootSet) {
-    const result = await walk(root.realPath, options)
-    for (const f of result.files) f.root = root.realPath
-    files.push(...result.files)
-    perRoot.push({ root: root.realPath, ...result.stats, files: result.files.length })
+    // A shared budget, decremented per root. Passing the same maxFiles to each
+    // walk made the documented cap a PER-ROOT cap, so N roots returned up to N
+    // times the number the caller asked for.
+    const remaining = Math.max(0, budget - files.length)
+    const result = await walk(root.realPath, { ...options, maxFiles: remaining })
+
+    for (const f of result.files) {
+      f.root = root.realPath
+      // NOT files.push(...result.files): spreading an array as call arguments
+      // exceeds V8's argument limit at roughly 125,000 elements and throws
+      // RangeError, which made every scanning tool crash on a large root well
+      // below the 200,000-file cap the schema advertises.
+      files.push(f)
+    }
+
+    const exhausted = remaining === 0 || result.stats.truncated
+    perRoot.push({
+      root: root.realPath,
+      ...result.stats,
+      truncated: exhausted,
+      maxFiles: budget,
+      files: result.files.length,
+    })
+    if (exhausted) break
   }
 
   return { files, perRoot }

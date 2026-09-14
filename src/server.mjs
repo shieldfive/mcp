@@ -44,8 +44,12 @@ export const VERSION = '0.1.0'
 /** stdout is the protocol channel. Everything human goes to stderr. */
 const log = (...parts) => process.stderr.write(`[shieldfive-mcp] ${parts.join(' ')}\n`)
 
+// 4096 is PATH_MAX on Linux and far above anything macOS accepts. The cap is
+// not about the filesystem: without it a 5 MB path argument was reflected
+// verbatim into the error message and landed 1:1 in the model's context.
 const pathArg = z
   .string()
+  .max(4096, 'path is longer than any filesystem accepts')
   .describe('Absolute path. Must resolve inside a configured root; relative paths are refused.')
 
 const scanArgs = {
@@ -227,10 +231,16 @@ export function createServer(ctx) {
         inputSchema: tool.inputSchema,
         annotations: tool.annotations,
       },
-      async (args) => {
+      async (args, extra) => {
         try {
-          return await tool.handler(ctx, args ?? {})
+          // extra.signal is aborted when the client cancels the request. It was
+          // previously discarded, so a cancelled scan of a large tree kept
+          // hashing to completion.
+          return await tool.handler({ ...ctx, signal: extra?.signal }, args ?? {})
         } catch (err) {
+          if (err?.name === 'AbortError' || extra?.signal?.aborted) {
+            return toolFailure(new Error('Cancelled.'))
+          }
           if (err?.name !== 'ToolError') {
             log(`${tool.name} failed:`, err?.stack ?? String(err))
           }

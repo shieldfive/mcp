@@ -80,6 +80,11 @@ you delete that directory yourself, in your own file manager, with your own
 undo. The tool says so in its own output so the assistant cannot report the
 space as reclaimed.
 
+That holds for overwriting too. `move_local` with `overwrite: true` moves the
+item already at the destination into the trash and then takes its place; it does
+not remove it. The preview tells you how many files and how many bytes would be
+displaced, not just how many are being moved.
+
 **Every tool that changes anything does nothing by default.** Call it without
 `confirm: true` and it resolves the paths, checks containment, reports exactly
 what it would do, and stops. The preview runs the same code as the action, so a
@@ -94,10 +99,10 @@ plan that reports a refusal is a refusal.
 | `find_large_files` | sizes | — |
 | `find_old_files` | modification times | — |
 | `storage_summary` | sizes, by extension and directory | — |
-| `move_local` | — | moves a file or folder |
+| `move_local` | sizes of both the source and anything it would displace | moves a file or folder; moves a displaced destination to the trash |
 | `rename_local` | — | renames in place |
 | `create_local_folder` | — | creates a directory |
-| `trash_local` | — | moves into the trash directory |
+| `trash_local` | sizes of the subtree being trashed | moves into the trash directory, writes a manifest |
 
 `find_old_files` reports modification time, which is a weak signal: some copy
 operations reset it to the copy date, and an untouched file is not an unwanted
@@ -124,7 +129,7 @@ through a symlinked parent is caught before the write rather than after it.
 
 ## What the tests assert
 
-`npm test` runs 76 tests. The ones worth knowing about:
+`npm test` runs 95 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side.
@@ -160,6 +165,15 @@ imports the stdio transport and no HTTP one, which is also asserted.
   a cap is hit the result says so, in the summary line as well as in a field.
   A truncated listing read as a complete one is how a wrong conclusion gets
   drawn confidently.
+- **Hardlinks are not resolved.** `realpath` follows symlinks, not hardlinks, so
+  a hardlink inside a root that points at an inode also reachable outside every
+  root reads as contained — because it genuinely is one of that inode's names.
+  Files with a link count above one are counted and surfaced in scan warnings
+  rather than silently trusted.
+- **The environment is inherited, as with any child process.** This code reads
+  only `SHIELDFIVE_MCP_ROOTS`, which is asserted by a test. That is a guarantee
+  about what it reads, not a claim that other variables are absent from the
+  process.
 - **Windows is untested.** The code uses no POSIX-only API, and path handling
   goes through `node:path`, but nobody has run it there.
 
