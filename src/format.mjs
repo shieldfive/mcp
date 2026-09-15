@@ -69,13 +69,21 @@ export function toolResult(summary, data) {
   }
 }
 
-/** A refusal, rendered so the model can act on it rather than retry blindly. */
+/**
+ * A refusal, rendered so the model can act on it rather than retry blindly.
+ *
+ * A ToolError's `detail` -- what a partial failure had already moved, and the
+ * manifests that record it -- follows as a second block of JSON. It used to be
+ * dropped here, so the one structured account of a half-finished operation
+ * never reached the client.
+ */
 export function toolFailure(err) {
   const code = err?.code ?? 'error'
-  return {
-    isError: true,
-    content: [{ type: 'text', text: `[${code}] ${err?.message ?? String(err)}` }],
+  const content = [{ type: 'text', text: `[${code}] ${err?.message ?? String(err)}` }]
+  if (err?.detail !== undefined) {
+    content.push({ type: 'text', text: JSON.stringify(err.detail, null, 2) })
   }
+  return { isError: true, content }
 }
 
 /**

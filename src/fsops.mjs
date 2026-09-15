@@ -8,7 +8,7 @@
 // operation that fails when the destination exists wherever the platform has
 // one, and says plainly where it does not.
 
-import { link, lstat, mkdir, readlink, rename, rmdir, symlink, unlink } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readlink, rename, rmdir, symlink, unlink } from 'node:fs/promises'
 
 import { quote } from './format.mjs'
 import { ToolError } from './roots.mjs'
@@ -100,6 +100,24 @@ async function renameOverPlaceholder(from, to) {
     await rmdir(to).catch(() => {})
     if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') throw destinationExists(to)
     throw err
+  }
+}
+
+/**
+ * Flush a directory, so a rename just made in it survives a power cut.
+ *
+ * Best effort. Not every platform lets a directory be opened and flushed, and a
+ * failure here undoes nothing that has already happened.
+ */
+export async function syncDirectory(path) {
+  let handle
+  try {
+    handle = await open(path, 'r')
+    await handle.sync()
+  } catch {
+    // See above: nothing to report and nothing to undo.
+  } finally {
+    await handle?.close().catch(() => {})
   }
 }
 

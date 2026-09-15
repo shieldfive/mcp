@@ -75,3 +75,41 @@ export async function withPatchedFs(patches, fn) {
     syncBuiltinESMExports()
   }
 }
+
+async function run(command, args) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  return promisify(execFile)(command, args)
+}
+
+/**
+ * A second filesystem, mounted at `mountPoint`, for tests that need a real EXDEV.
+ *
+ * A RAM disk formatted HFS+ and mounted inside the test's own temporary tree, so
+ * one configured root can span two devices without anything touching /Volumes.
+ * macOS only. Returns null where it cannot be done, after saying so on stderr,
+ * so the caller skips visibly instead of passing for the wrong reason.
+ */
+export async function mountScratchVolume(mountPoint, { megabytes = 20 } = {}) {
+  if (process.platform !== 'darwin') {
+    console.error(`[skip] no second volume at ${mountPoint}: only macOS is supported by this helper`)
+    return null
+  }
+  let disk
+  try {
+    const { stdout } = await run('hdiutil', ['attach', '-nomount', `ram://${megabytes * 2048}`])
+    disk = stdout.trim().split(/\s+/)[0]
+    await run('newfs_hfs', ['-v', 'sf-mcp-test', disk])
+    await mkdir(mountPoint, { recursive: true })
+    await run('diskutil', ['mount', '-mountPoint', mountPoint, disk])
+  } catch (err) {
+    if (disk) await run('hdiutil', ['detach', disk, '-force']).catch(() => {})
+    console.error(`[skip] could not mount a scratch volume at ${mountPoint}: ${err.message}`)
+    return null
+  }
+  return {
+    mountPoint,
+    disk,
+    detach: () => run('hdiutil', ['detach', disk, '-force']).catch(() => {}),
+  }
+}
