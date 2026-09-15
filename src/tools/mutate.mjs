@@ -54,6 +54,18 @@ import {
 
 export { trashStamp } from '../trash.mjs'
 
+/**
+ * Refuse to start changing anything once the request has been cancelled.
+ *
+ * The signal reached every tool, and the mutating ones never looked at it, so
+ * a move or a trash the user had already called off ran to completion.
+ */
+function refuseIfCancelled(ctx) {
+  if (ctx.signal?.aborted) {
+    throw new ToolError('cancelled', 'Cancelled before anything was changed.')
+  }
+}
+
 /** What an lstat says an entry is, in the words the previews use. */
 function kindOf(stats) {
   if (stats.isSymbolicLink()) return 'symlink'
@@ -130,7 +142,7 @@ async function measure(path) {
  * Returns how the item moved and, after a copy, the source entries left in
  * place because they changed once they had been copied.
  */
-async function relocate(from, to, stats) {
+async function relocate(from, to, stats, signal) {
   try {
     await renameNoReplace(from, to, stats)
     return { method: 'rename', leftInPlace: [] }
@@ -138,10 +150,10 @@ async function relocate(from, to, stats) {
     if (err.code !== 'EXDEV') throw err
   }
   if (stats.isFile()) {
-    return { method: 'copy+remove', leftInPlace: await moveFileAcrossDevices(from, to, stats) }
+    return { method: 'copy+remove', leftInPlace: await moveFileAcrossDevices(from, to, stats, signal) }
   }
   if (stats.isDirectory()) {
-    return { method: 'copy+remove', leftInPlace: await moveTreeAcrossDevices(from, to) }
+    return { method: 'copy+remove', leftInPlace: await moveTreeAcrossDevices(from, to, signal) }
   }
   throw new ToolError(
     'special_file',
@@ -289,6 +301,8 @@ export async function moveLocal(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
+
   // Re-resolve immediately before the write. It does not close the
   // time-of-check/time-of-use window — nothing path-based can, and SECURITY.md
   // says so — but it narrows it from "however long measure() took on a large
@@ -328,10 +342,15 @@ export async function moveLocal(ctx, args) {
     displacedTo = trash.destination
   }
 
-  await mkdir(dirname(finalPath), { recursive: true })
   let outcome
   try {
-    outcome = await relocate(source.realPath, finalPath, source.stats)
+    // A cancellation that arrived while the destination was being displaced
+    // stops the move here, and the displaced item is put back below. One that
+    // arrives during a copy across devices stops it before the copy is put in
+    // place. Once the source has started to be removed, the move completes.
+    refuseIfCancelled(ctx)
+    await mkdir(dirname(finalPath), { recursive: true })
+    outcome = await relocate(source.realPath, finalPath, source.stats, ctx.signal)
   } catch (err) {
     // The destination was displaced a moment ago and the replacement did not
     // arrive. Put it back rather than leaving the user with an empty
@@ -339,23 +358,27 @@ export async function moveLocal(ctx, args) {
     if (displacedTo) {
       try {
         await renameNoReplace(displacedTo, finalPath, current.stats)
-        await discardBatch(batch)
-        throw new ToolError(
-          'move_failed_destination_restored',
-          `The move failed (${err.message}). The item that was at ${quote(finalPath)} has ` +
-            'been put back, and the source is untouched.',
-        )
       } catch (restoreErr) {
-        if (restoreErr instanceof ToolError && restoreErr.code === 'move_failed_destination_restored') {
-          throw restoreErr
-        }
         throw new ToolError(
           'move_failed_destination_in_trash',
-          `The move failed (${err.message}) and the item that was at ${quote(finalPath)} ` +
-            `could not be put back (${restoreErr.message}). It is NOT lost -- it is at ` +
-            `${quote(displacedTo)} and recorded in the manifest beside it.`,
+          `The move ${err.code === 'cancelled' ? 'was cancelled' : `failed (${err.message})`} and the ` +
+            `item that was at ${quote(finalPath)} could not be put back (${restoreErr.message}). ` +
+            `It is NOT lost -- it is at ${quote(displacedTo)} and recorded in the manifest beside it.`,
         )
       }
+      await discardBatch(batch)
+      if (err.code === 'cancelled') {
+        throw new ToolError(
+          'cancelled',
+          `Cancelled before the move finished. The item that was at ${quote(finalPath)} has ` +
+            'been put back, and the source is untouched.',
+        )
+      }
+      throw new ToolError(
+        'move_failed_destination_restored',
+        `The move failed (${err.message}). The item that was at ${quote(finalPath)} has ` +
+          'been put back, and the source is untouched.',
+      )
     }
     throw err
   }
@@ -374,9 +397,14 @@ export async function moveLocal(ctx, args) {
       (displacedTo
         ? ` The ${displaced.kind} that was there (${displaced.files} file(s), ` +
           `${formatBytes(displaced.bytes)}) was moved to ${displacedTo}, not deleted.`
+        : '') +
+      (ctx.signal?.aborted
+        ? ' The request was cancelled after the move had started, so it was completed rather ' +
+          'than left half-done.'
         : ''),
     {
       performed: true,
+      cancelled_after_start: Boolean(ctx.signal?.aborted),
       method: outcome.method,
       source_left_in_place: left,
       displaced_to: displacedTo,
@@ -439,6 +467,8 @@ export async function renameLocal(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
+
   // The check above is for the preview. This is what keeps the promise: it
   // refuses if anything has appeared at the new name since.
   await renameNoReplace(source.realPath, finalPath, source.stats)
@@ -473,6 +503,7 @@ export async function createLocalFolder(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
   await mkdir(dest.realPath, { recursive: true })
   return toolResult(`Created ${dest.realPath}.`, { performed: true, ...plan })
 }
@@ -583,12 +614,20 @@ export async function trashLocal(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
+
   // One batch per trash directory, each with a manifest that lists its items
   // before any of them moves.
   const batches = new Map()
   const moved = []
   let failure = null
   for (const p of planned) {
+    // Checked between items, never inside one, so a cancelled batch stops with
+    // every item either moved and recorded or untouched.
+    if (ctx.signal?.aborted) {
+      failure = new ToolError('cancelled', 'The request was cancelled.')
+      break
+    }
     try {
       let b = batches.get(p.base)
       if (!b) {
@@ -664,6 +703,7 @@ async function trashFailure(failure, planned, moved, batches, ctx) {
     manifests,
   }
 
+  const cancelled = failure instanceof ToolError && failure.code === 'cancelled'
   if (moved.length === 0) {
     return new ToolError(
       failure instanceof ToolError ? failure.code : 'trash_failed',
@@ -674,8 +714,10 @@ async function trashFailure(failure, planned, moved, batches, ctx) {
 
   const shown = detail.moved.slice(0, 10).map((m) => `${m.original_path} → ${m.trashed_to}`)
   return new ToolError(
-    'trash_partially_applied',
-    `Stopped after moving ${moved.length} of ${planned.length} item(s): ${failure.message}. ` +
+    cancelled ? 'cancelled_partially_applied' : 'trash_partially_applied',
+    (cancelled
+      ? `Cancelled after moving ${moved.length} of ${planned.length} item(s). `
+      : `Stopped after moving ${moved.length} of ${planned.length} item(s): ${failure.message}. `) +
       `Moved, and recorded in ${manifests.join(', ')}: ${shown.join('; ')}` +
       `${moved.length > shown.length ? `; and ${moved.length - shown.length} more` : ''}. ` +
       (stale.length

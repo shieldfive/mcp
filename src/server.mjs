@@ -30,7 +30,7 @@ import { z } from 'zod'
 
 import { toolFailure } from './format.mjs'
 import { LIMITS } from './limits.mjs'
-import { NO_ROOTS_MESSAGE, resolveRoots, rootCandidatesFrom } from './roots.mjs'
+import { NO_ROOTS_MESSAGE, resolveRoots, rootCandidatesFrom, ToolError } from './roots.mjs'
 import {
   findDuplicates,
   findLargeFiles,
@@ -227,6 +227,46 @@ const TOOLS = [
   },
 ]
 
+/**
+ * Run one tool call and render its result or its refusal.
+ *
+ * extra.signal is aborted when the client cancels the request, and the SDK then
+ * sends no response at all. For a tool that changes files the outcome is
+ * therefore written to the log, the only record left of what a cancelled call
+ * did. Every error raised after a cancellation used to be replaced with
+ * "Cancelled.", including a partial trash carrying its account of what had
+ * already moved; a mutation's own error now passes through intact, detail
+ * included, and only a read-only tool's abort becomes a plain cancellation.
+ */
+export async function runTool(tool, ctx, args, extra, write = log) {
+  const signal = extra?.signal
+  const mutates = tool.annotations?.readOnlyHint === false
+  try {
+    const result = await tool.handler({ ...ctx, signal }, args ?? {})
+    if (mutates && signal?.aborted) {
+      write(
+        `${tool.name}: the request was cancelled after the change had started, and it ` +
+          `completed: ${result?.content?.[0]?.text ?? ''}`,
+      )
+    }
+    return result
+  } catch (err) {
+    if (!mutates && (err?.name === 'AbortError' || signal?.aborted)) {
+      return toolFailure(new ToolError('cancelled', 'Cancelled.'))
+    }
+    if (err?.name !== 'ToolError') {
+      write(`${tool.name} failed:`, err?.stack ?? String(err))
+    }
+    if (mutates && signal?.aborted) {
+      write(
+        `${tool.name}: the request was cancelled; outcome: [${err?.code ?? 'error'}] ` +
+          `${err?.message ?? String(err)}`,
+      )
+    }
+    return toolFailure(err)
+  }
+}
+
 export function createServer(ctx) {
   const server = new McpServer(
     { name: 'shieldfive-mcp', version: VERSION },
@@ -251,22 +291,7 @@ export function createServer(ctx) {
         inputSchema: tool.inputSchema,
         annotations: tool.annotations,
       },
-      async (args, extra) => {
-        try {
-          // extra.signal is aborted when the client cancels the request. It was
-          // previously discarded, so a cancelled scan of a large tree kept
-          // hashing to completion.
-          return await tool.handler({ ...ctx, signal: extra?.signal }, args ?? {})
-        } catch (err) {
-          if (err?.name === 'AbortError' || extra?.signal?.aborted) {
-            return toolFailure(new Error('Cancelled.'))
-          }
-          if (err?.name !== 'ToolError') {
-            log(`${tool.name} failed:`, err?.stack ?? String(err))
-          }
-          return toolFailure(err)
-        }
-      },
+      (args, extra) => runTool(tool, ctx, args, extra),
     )
   }
 

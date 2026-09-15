@@ -167,6 +167,15 @@ async function renameChecked(from, to) {
 //   that was copied, a directory only once it is empty. Whatever appeared or
 //   changed during the move stays where it is, and the caller is told.
 
+function refuseIfCancelled(signal) {
+  if (signal?.aborted) {
+    throw new ToolError(
+      'cancelled',
+      'Cancelled before the copy was put in place. Nothing was moved, and the partial copy was removed.',
+    )
+  }
+}
+
 let incomingCounter = 0
 
 /** A name beside `to` that nothing else uses, for a copy on its way in. */
@@ -256,12 +265,13 @@ async function removeCopied(copied) {
  * Returns the source paths left in place: empty, unless the source changed
  * after its copy was verified.
  */
-export async function moveFileAcrossDevices(from, to, before) {
+export async function moveFileAcrossDevices(from, to, before, signal) {
   const incoming = incomingName(to)
   try {
     await copyFile(from, incoming, constants.COPYFILE_EXCL)
     await syncFile(incoming)
     await verifyCopy(from, before, incoming)
+    refuseIfCancelled(signal)
     await renameNoReplace(incoming, to)
   } catch (err) {
     // The incoming name was created exclusively, so whatever is there is this
@@ -281,14 +291,15 @@ export async function moveFileAcrossDevices(from, to, before) {
  * each file verified, and the staging directory renamed into place only once
  * all of it has landed. Returns the source paths left in place.
  */
-export async function moveTreeAcrossDevices(from, to) {
+export async function moveTreeAcrossDevices(from, to, signal) {
   const staging = incomingName(to)
   await mkdir(staging)
   const made = { files: [], dirs: [staging] }
   const copied = []
   const sourceDirs = [from]
   try {
-    await copyTreeVerified(from, staging, made, copied, sourceDirs)
+    await copyTreeVerified(from, staging, made, copied, sourceDirs, signal)
+    refuseIfCancelled(signal)
     await renameNoReplace(staging, to)
   } catch (err) {
     for (const file of made.files) await unlink(file).catch(() => {})
@@ -308,8 +319,9 @@ export async function moveTreeAcrossDevices(from, to) {
   return left
 }
 
-async function copyTreeVerified(fromDir, toDir, made, copied, sourceDirs) {
+async function copyTreeVerified(fromDir, toDir, made, copied, sourceDirs, signal) {
   for (const name of await readdir(fromDir)) {
+    refuseIfCancelled(signal)
     const source = join(fromDir, name)
     const target = join(toDir, name)
     const stats = await lstat(source)
@@ -326,7 +338,7 @@ async function copyTreeVerified(fromDir, toDir, made, copied, sourceDirs) {
       await mkdir(target)
       made.dirs.push(target)
       sourceDirs.push(source)
-      await copyTreeVerified(source, target, made, copied, sourceDirs)
+      await copyTreeVerified(source, target, made, copied, sourceDirs, signal)
       continue
     }
     if (!stats.isFile()) {
