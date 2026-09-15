@@ -215,3 +215,10 @@ describe('the README does not drift from the code', () => {
     }
   })
 })
+
+describe('release hygiene', () => {
+  it('keeps no scratch scripts in the repository root', async () => {
+    const stray = (await readdir(ROOT)).filter((name) => /\.(c|m)?js$/.test(name))
+    assert.deepEqual(stray, [], 'scripts at the root of a public repository read as part of it')
+  })
+})
