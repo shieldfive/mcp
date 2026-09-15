@@ -174,6 +174,17 @@ describe('resolveTarget', () => {
     const got = await resolveTarget(ctx.roots, t.path('in/x.txt'))
     assert.equal(got.exists, true)
   })
+
+  it('REFUSES A DANGLING SYMLINK, as the last component or one in the middle', async () => {
+    // realpath fails on a dangling link exactly as it fails on a missing path,
+    // so the link used to be treated as a free, contained name -- and a
+    // cross-device copy then wrote through it to wherever it pointed.
+    const t = await tree({ 'in/.keep': '', 'out/.keep': '', 'in/dangling': { symlinkTo: 'out/not-there' } })
+    const ctx = await makeCtx([t.path('in')])
+    const dangling = (e) => e.code === 'dangling_symlink'
+    await assert.rejects(() => resolveTarget(ctx.roots, t.path('in/dangling')), dangling)
+    await assert.rejects(() => resolveTarget(ctx.roots, t.path('in/dangling/child.txt')), dangling)
+  })
 })
 
 describe('path arguments are used as given', () => {

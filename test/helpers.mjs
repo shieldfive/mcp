@@ -1,4 +1,6 @@
+import fs from 'node:fs'
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -49,4 +51,27 @@ export function payload(result) {
 
 export function summary(result) {
   return result.content[0].text
+}
+
+/**
+ * Run `fn` with some node:fs/promises functions replaced.
+ *
+ * For faults that have to land at an exact moment -- a copy that arrives with a
+ * byte wrong, a file that appears between a check and a rename -- instead of a
+ * race the test would lose most of the time. syncBuiltinESMExports() is what
+ * makes the replacement visible to modules that imported the function by name.
+ */
+export async function withPatchedFs(patches, fn) {
+  const originals = {}
+  for (const [name, wrap] of Object.entries(patches)) {
+    originals[name] = fs.promises[name]
+    fs.promises[name] = wrap(originals[name])
+  }
+  syncBuiltinESMExports()
+  try {
+    return await fn()
+  } finally {
+    Object.assign(fs.promises, originals)
+    syncBuiltinESMExports()
+  }
 }

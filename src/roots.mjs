@@ -15,7 +15,7 @@
 // root `/data/root` just because the string starts with it.
 
 import { realpath, lstat } from 'node:fs/promises'
-import { delimiter, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { quote } from './format.mjs'
 
@@ -125,10 +125,11 @@ export function rootCandidatesFrom(argv, env) {
 }
 
 /**
- * Resolve a caller-supplied path that must already exist.
+ * Resolve a caller-supplied path that must already exist, following links.
  *
- * Returns the REAL path, so every downstream operation acts on the resolved
- * target rather than on a link the caller chose.
+ * Returns the REAL path. This is for what is read or walked; a path a tool is
+ * about to move, rename or trash goes through resolveEntry() instead, so the
+ * tool acts on the link it was given rather than on what the link points to.
  */
 export async function resolveExisting(rootSet, input, { what = 'path' } = {}) {
   assertRoots(rootSet)
@@ -157,25 +158,105 @@ export async function resolveExisting(rootSet, input, { what = 'path' } = {}) {
 export async function resolveTarget(rootSet, input, { what = 'destination' } = {}) {
   assertRoots(rootSet)
   const requested = requireAbsolute(input, what)
+  const { realPath, exists } = await resolveNearest(requested, what)
+  return { realPath, root: requireContained(rootSet, realPath, requested, what), exists }
+}
 
+/**
+ * Resolve a directory entry a tool is about to move, rename or trash.
+ *
+ * The parent is realpath'd and the last component is not: a symlink named here
+ * is the thing acted on, never its target. Following it made trash_local on a
+ * shortcut trash the folder behind it, and rename_local rename the file a link
+ * pointed to, leaving the link dangling. Containment is checked on the entry's
+ * own position, which is all the operation touches.
+ *
+ * `stats` is the entry's lstat.
+ */
+export async function resolveEntry(rootSet, input, { what = 'path' } = {}) {
+  assertRoots(rootSet)
+  const requested = requireAbsolute(input, what)
+  const parent = dirname(requested)
+  if (parent === requested) {
+    throw new ToolError('invalid_path', `${what} ${quote(requested)} is a filesystem root, not an entry.`)
+  }
+
+  let realParent
+  try {
+    realParent = await realpath(parent)
+  } catch (err) {
+    throw entryError(err, what, requested)
+  }
+  const realPath = join(realParent, basename(requested))
+
+  let stats
+  try {
+    stats = await lstat(realPath)
+  } catch (err) {
+    throw entryError(err, what, requested)
+  }
+  return { realPath, root: requireContained(rootSet, realPath, requested, what), stats }
+}
+
+/**
+ * Resolve where a move or a rename would put something.
+ *
+ * Like resolveTarget(), except that the last component is inspected without
+ * being followed and only its own position has to be inside a root. `stats` is
+ * the lstat of whatever is already there, or null. A symlink at the
+ * destination, dangling or not, is an existing entry to report and to refuse or
+ * displace, not a way through to its target: a dangling one used to read as a
+ * free name, and a copy then wrote through it to wherever it pointed.
+ */
+export async function resolveDestination(rootSet, input, { what = 'destination' } = {}) {
+  assertRoots(rootSet)
+  const requested = requireAbsolute(input, what)
+  const parent = dirname(requested)
+  if (parent === requested) {
+    throw new ToolError('invalid_path', `${what} ${quote(requested)} is a filesystem root, not an entry.`)
+  }
+
+  const nearest = await resolveNearest(parent, what)
+  const realPath = join(nearest.realPath, basename(requested))
+  let stats = null
+  if (nearest.exists) {
+    try {
+      stats = await lstat(realPath)
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw new ToolError('unreadable', `Cannot read ${what} ${quote(requested)} (${err.code})`)
+      }
+    }
+  }
+  return { realPath, root: requireContained(rootSet, realPath, requested, what), stats }
+}
+
+/**
+ * Realpath the nearest existing ancestor of `requested` and re-append the rest.
+ *
+ * A component that exists but does not resolve is a dangling symlink. realpath
+ * reports ENOENT for it exactly as for a missing path, and taking that at its
+ * word made the link look like a free, contained name that a write would then
+ * follow out of the root. It is refused.
+ */
+async function resolveNearest(requested, what) {
   const trailing = []
   let probe = requested
   for (;;) {
+    let real
     try {
-      const real = await realpath(probe)
-      const full = trailing.length ? join(real, ...trailing) : real
-      return {
-        realPath: full,
-        root: requireContained(rootSet, full, requested, what),
-        exists: trailing.length === 0,
-      }
+      real = await realpath(probe)
     } catch (err) {
-      // A containment refusal is raised from inside this try by
-      // requireContained. Re-wrapping it as an I/O error would relabel the one
-      // failure that matters most here, so it passes through untouched.
-      if (err instanceof ToolError) throw err
       if (err.code !== 'ENOENT') {
         throw new ToolError('unreadable', `Cannot resolve ${what} ${quote(requested)} (${err.code})`)
+      }
+      if (await isSymlink(probe)) {
+        throw new ToolError(
+          'dangling_symlink',
+          `Refused: ${quote(probe)} is a symlink whose target does not exist. This server ` +
+            'does not write through links, and will not treat a broken one as a free name. ' +
+            'Remove or repair the link first.',
+        )
       }
       const parent = resolve(probe, '..')
       if (parent === probe) {
@@ -183,8 +264,25 @@ export async function resolveTarget(rootSet, input, { what = 'destination' } = {
       }
       trailing.unshift(probe.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)))
       probe = parent
+      continue
     }
+    return { realPath: trailing.length ? join(real, ...trailing) : real, exists: trailing.length === 0 }
   }
+}
+
+async function isSymlink(path) {
+  try {
+    return (await lstat(path)).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+function entryError(err, what, requested) {
+  if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+    return new ToolError('not_found', `No such ${what}: ${quote(requested)}`)
+  }
+  return new ToolError('unreadable', `Cannot read ${what} ${quote(requested)} (${err.code})`)
 }
 
 function assertRoots(rootSet) {
