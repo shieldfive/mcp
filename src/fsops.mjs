@@ -8,10 +8,25 @@
 // operation that fails when the destination exists wherever the platform has
 // one, and says plainly where it does not.
 
-import { link, lstat, mkdir, open, readlink, rename, rmdir, symlink, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readlink,
+  rename,
+  rmdir,
+  symlink,
+  unlink,
+} from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 import { quote } from './format.mjs'
-import { ToolError } from './roots.mjs'
+import { isInside, ToolError } from './roots.mjs'
+import { hashFile } from './scan.mjs'
 
 /** Errors meaning "this filesystem cannot make that kind of name", rather than a real failure. */
 const NAME_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EMLINK', 'EINVAL'])
@@ -132,3 +147,203 @@ async function renameChecked(from, to) {
   if (present) throw destinationExists(to)
   await rename(from, to)
 }
+
+// Moves that cross a device.
+//
+// rename(2) cannot cross a filesystem boundary, so such a move is a copy
+// followed by removing the source: the one place this server removes anything
+// a user made. The old fallback began by rm -rf'ing whatever sat at its staging
+// name, copied files and directories only -- so a FIFO, socket or device file
+// in the tree was dropped -- and removed a file's source without flushing or
+// checking the copy. The rules now:
+//
+// - Nothing that already exists is removed or replaced. A copy is made under a
+//   fresh name, created exclusively, and put in place with renameNoReplace().
+// - Only what a copy can carry is copied. A symlink or a special file in a tree
+//   is refused before anything of the source is removed.
+// - Every file is flushed to disk and verified -- same size and SHA-256, and a
+//   source that has not changed since it was copied -- before anything goes.
+// - The source is removed entry by entry: a file only if it is still the file
+//   that was copied, a directory only once it is empty. Whatever appeared or
+//   changed during the move stays where it is, and the caller is told.
+
+let incomingCounter = 0
+
+/** A name beside `to` that nothing else uses, for a copy on its way in. */
+function incomingName(to) {
+  incomingCounter += 1
+  return join(dirname(to), `.shieldfive-mcp-incoming-${process.pid}-${incomingCounter}`)
+}
+
+/** Flush a file's bytes to disk. A read-only descriptor is enough, so a read-only copy can be flushed too. */
+export async function syncFile(path) {
+  const handle = await open(path, 'r')
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+function unchanged(before, now) {
+  return (
+    now.ino === before.ino &&
+    now.dev === before.dev &&
+    now.size === before.size &&
+    now.mtimeMs === before.mtimeMs
+  )
+}
+
+function describeSpecial(stats) {
+  if (stats.isFIFO()) return 'named pipe (FIFO)'
+  if (stats.isSocket()) return 'socket'
+  if (stats.isBlockDevice() || stats.isCharacterDevice()) return 'device file'
+  return 'special file'
+}
+
+async function verifyCopy(source, before, copy) {
+  const changed = () =>
+    new ToolError(
+      'source_changed',
+      `Refused: ${quote(source)} changed while it was being copied, so the copy cannot be ` +
+        'trusted. The copy was discarded and the source was not removed; try again once ' +
+        'nothing is writing to it.',
+    )
+  if (!unchanged(before, await lstat(source))) throw changed()
+
+  const copied = await lstat(copy)
+  const sourceDigest = await hashFile(source)
+  const copyDigest = await hashFile(copy)
+  if (!unchanged(before, await lstat(source))) throw changed()
+  if (copied.size !== before.size || sourceDigest !== copyDigest) {
+    throw new ToolError(
+      'copy_verification_failed',
+      `Refused: the copy of ${quote(source)} does not match it (` +
+        (copied.size !== before.size
+          ? `${copied.size} bytes instead of ${before.size}`
+          : 'the same size, but a different SHA-256') +
+        '). The copy was discarded and the source was not removed.',
+    )
+  }
+}
+
+/** Remove sources that have a verified copy, each only if it is still what was copied. */
+async function removeCopied(copied) {
+  const left = []
+  for (const { source, stats } of copied) {
+    let now
+    try {
+      now = await lstat(source)
+    } catch {
+      continue
+    }
+    if (!unchanged(stats, now)) {
+      left.push(source)
+      continue
+    }
+    try {
+      await unlink(source)
+    } catch {
+      left.push(source)
+    }
+  }
+  return left
+}
+
+/**
+ * Move one regular file to another device.
+ *
+ * Returns the source paths left in place: empty, unless the source changed
+ * after its copy was verified.
+ */
+export async function moveFileAcrossDevices(from, to, before) {
+  const incoming = incomingName(to)
+  try {
+    await copyFile(from, incoming, constants.COPYFILE_EXCL)
+    await syncFile(incoming)
+    await verifyCopy(from, before, incoming)
+    await renameNoReplace(incoming, to)
+  } catch (err) {
+    // The incoming name was created exclusively, so whatever is there is this
+    // call's own partial or unverified copy -- unless the name was taken, and
+    // then nothing is removed.
+    if (err.code !== 'EEXIST') await unlink(incoming).catch(() => {})
+    throw err
+  }
+  await syncDirectory(dirname(to))
+  return removeCopied([{ source: from, stats: before }])
+}
+
+/**
+ * Move a directory tree to another device.
+ *
+ * The tree is copied into a fresh staging directory beside the destination,
+ * each file verified, and the staging directory renamed into place only once
+ * all of it has landed. Returns the source paths left in place.
+ */
+export async function moveTreeAcrossDevices(from, to) {
+  const staging = incomingName(to)
+  await mkdir(staging)
+  const made = { files: [], dirs: [staging] }
+  const copied = []
+  const sourceDirs = [from]
+  try {
+    await copyTreeVerified(from, staging, made, copied, sourceDirs)
+    await renameNoReplace(staging, to)
+  } catch (err) {
+    for (const file of made.files) await unlink(file).catch(() => {})
+    for (const dir of [...made.dirs].reverse()) await rmdir(dir).catch(() => {})
+    throw err
+  }
+  await syncDirectory(dirname(to))
+
+  const left = await removeCopied(copied)
+  for (const dir of [...sourceDirs].reverse()) {
+    try {
+      await rmdir(dir)
+    } catch {
+      if (!left.some((p) => isInside(p, dir))) left.push(dir)
+    }
+  }
+  return left
+}
+
+async function copyTreeVerified(fromDir, toDir, made, copied, sourceDirs) {
+  for (const name of await readdir(fromDir)) {
+    const source = join(fromDir, name)
+    const target = join(toDir, name)
+    const stats = await lstat(source)
+
+    if (stats.isSymbolicLink()) {
+      throw new ToolError(
+        'symlink_in_tree',
+        `Refused: ${quote(source)} is a symlink, and this move crosses a filesystem boundary, ` +
+          'so it would have to be copied, and a copy cannot keep it a link. Nothing was ' +
+          'removed and nothing is left at the destination. Move the link yourself or remove it first.',
+      )
+    }
+    if (stats.isDirectory()) {
+      await mkdir(target)
+      made.dirs.push(target)
+      sourceDirs.push(source)
+      await copyTreeVerified(source, target, made, copied, sourceDirs)
+      continue
+    }
+    if (!stats.isFile()) {
+      throw new ToolError(
+        'special_file_in_tree',
+        `Refused: ${quote(source)} is a ${describeSpecial(stats)}, which cannot be copied to ` +
+          'another filesystem. Nothing was removed and nothing is left at the destination. ' +
+          'Move it yourself, or move the rest without it.',
+      )
+    }
+
+    made.files.push(target)
+    await copyFile(source, target, constants.COPYFILE_EXCL)
+    await syncFile(target)
+    await verifyCopy(source, stats, target)
+    copied.push({ source, stats })
+  }
+}
+
+export { describeSpecial }

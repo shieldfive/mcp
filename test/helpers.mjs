@@ -82,6 +82,11 @@ async function run(command, args) {
   return promisify(execFile)(command, args)
 }
 
+/** A named pipe. Node has no mkfifo, so this shells out; only tests do that. */
+export async function makeFifo(path) {
+  await run('mkfifo', [path])
+}
+
 /**
  * A second filesystem, mounted at `mountPoint`, for tests that need a real EXDEV.
  *

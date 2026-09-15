@@ -22,14 +22,20 @@
 //    move, rename or trash is moved, renamed or trashed itself; its target is
 //    never touched.
 //
-// The only `rm` calls left are in the cross-device copy fallback, where they
-// remove a source whose bytes have already been written to the destination.
+// The only thing of the user's ever removed is the source of a move that
+// crosses a device, and only once its copy has been flushed and verified; see
+// fsops.mjs. Everything else removed is this server's own temporary state.
 
-import { copyFile, lstat, mkdir, readdir, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, readdir } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
 
 import { formatBytes, quote, toolResult } from '../format.mjs'
-import { renameNoReplace } from '../fsops.mjs'
+import {
+  describeSpecial,
+  moveFileAcrossDevices,
+  moveTreeAcrossDevices,
+  renameNoReplace,
+} from '../fsops.mjs'
 import { boundedList, LIMITS } from '../limits.mjs'
 import { isInside, resolveDestination, resolveEntry, resolveTarget, ToolError } from '../roots.mjs'
 import { TRASH_DIR_NAME } from '../scan.mjs'
@@ -67,15 +73,22 @@ async function measure(path) {
   try {
     st = await lstat(path)
   } catch {
-    return { files: 0, bytes: 0, kind: 'missing', symlinks: [] }
+    return { files: 0, bytes: 0, kind: 'missing', symlinks: [], special: [] }
   }
   if (!st.isDirectory()) {
-    return { files: st.isFile() ? 1 : 0, bytes: st.isFile() ? st.size : 0, kind: kindOf(st), symlinks: [] }
+    return {
+      files: st.isFile() ? 1 : 0,
+      bytes: st.isFile() ? st.size : 0,
+      kind: kindOf(st),
+      symlinks: [],
+      special: [],
+    }
   }
 
   let files = 0
   let bytes = 0
   const symlinks = []
+  const special = []
   const queue = [path]
   while (queue.length) {
     const dir = queue.shift()
@@ -92,7 +105,8 @@ async function measure(path) {
         continue
       }
       if (e.isDirectory()) queue.push(full)
-      else if (e.isFile()) {
+      else if (!e.isFile()) special.push(full)
+      else {
         try {
           const s = await lstat(full)
           files++
@@ -107,58 +121,43 @@ async function measure(path) {
       }
     }
   }
-  return { files, bytes, kind: 'directory', symlinks }
+  return { files, bytes, kind: 'directory', symlinks, special }
 }
 
 /**
- * Move without replacing anything, falling back to copy+remove when the move
- * crosses a device.
+ * Move without replacing anything, and across a device only by a verified copy.
+ *
+ * Returns how the item moved and, after a copy, the source entries left in
+ * place because they changed once they had been copied.
  */
 async function relocate(from, to, stats) {
   try {
     await renameNoReplace(from, to, stats)
-    return 'rename'
+    return { method: 'rename', leftInPlace: [] }
   } catch (err) {
     if (err.code !== 'EXDEV') throw err
   }
-
   if (stats.isFile()) {
-    await copyFile(from, to)
-    await rm(from)
-    return 'copy+remove'
+    return { method: 'copy+remove', leftInPlace: await moveFileAcrossDevices(from, to, stats) }
   }
-
-  // Stage the copy beside the target and rename it into place only once the
-  // whole tree has landed. Copying straight into `to` left a partial tree there
-  // when anything threw mid-walk -- and the source was already torn in half by
-  // the older interleaved copy+remove. Now a failure leaves the source
-  // untouched and nothing at the destination.
-  const staging = `${to}.shieldfive-mcp-incoming`
-  await rm(staging, { recursive: true, force: true })
-  try {
-    await copyTree(from, staging)
-  } catch (err) {
-    await rm(staging, { recursive: true, force: true })
-    throw err
+  if (stats.isDirectory()) {
+    return { method: 'copy+remove', leftInPlace: await moveTreeAcrossDevices(from, to) }
   }
-  await rename(staging, to)
-  await rm(from, { recursive: true })
-  return 'copy+remove'
+  throw new ToolError(
+    'special_file',
+    `Refused: ${quote(from)} is a ${describeSpecial(stats)}, and this move crosses a filesystem ` +
+      'boundary, where it would have to be copied. Nothing was moved.',
+  )
 }
 
-async function copyTree(from, to) {
-  await mkdir(to, { recursive: true })
-  for (const e of await readdir(from, { withFileTypes: true })) {
-    if (e.isSymbolicLink()) {
-      throw new ToolError(
-        'symlink_in_tree',
-        `Refused: ${join(from, e.name)} is a symlink, and this move crosses a ` +
-          'filesystem boundary so it cannot be preserved. Nothing has been ' +
-          'removed. Move it yourself or remove the link first.',
-      )
+/** The device of `path`, or of its nearest existing ancestor. */
+async function nearestDevice(path) {
+  for (let dir = path; ; dir = dirname(dir)) {
+    try {
+      return (await lstat(dir)).dev
+    } catch (err) {
+      if (dirname(dir) === dir) throw err
     }
-    if (e.isDirectory()) await copyTree(join(from, e.name), join(to, e.name))
-    else if (e.isFile()) await copyFile(join(from, e.name), join(to, e.name))
   }
 }
 
@@ -224,21 +223,36 @@ export async function moveLocal(ctx, args) {
     trash = { base, batch, destination: trashPaths(base, batch, finalPath).destination }
   }
 
-  // A symlink inside the source cannot survive a cross-device move, and
-  // relocate() throws when it reaches one. Refusing HERE rather than there is
-  // the difference between a clean refusal and one raised after the existing
-  // destination has already been displaced. Checked for every move, not only
+  // A symlink or a special file inside the source cannot survive a
+  // cross-device move, and the copy refuses when it reaches one. Refusing HERE
+  // is the difference between a clean refusal and one raised partway through.
+  // It is checked for every move that displaces a destination, not only
   // cross-device ones, because whether two paths share a device is not
-  // something the caller can see and a refusal that depends on it is worse
-  // than one that does not.
-  if (size.symlinks?.length && collision) {
+  // something the caller can see; and for any move that is known to cross one.
+  const crossesDevice = source.stats.dev !== (await nearestDevice(dirname(finalPath)))
+  const uncopyable = size.symlinks.length
+    ? { code: 'symlink_in_tree', what: 'symlink(s)', list: size.symlinks }
+    : size.special.length
+      ? { code: 'special_file_in_tree', what: 'FIFO(s), socket(s) or device file(s)', list: size.special }
+      : null
+  if (uncopyable && (collision || crossesDevice)) {
     throw new ToolError(
-      'symlink_in_tree',
+      uncopyable.code,
       `Refused before changing anything: ${quote(source.realPath)} contains ` +
-        `${size.symlinks.length} symlink(s), starting with ${quote(size.symlinks[0])}. ` +
-        'A move that also displaces an existing destination is not attempted with ' +
-        'links in the tree, because a failure partway would leave both sides ' +
-        'disturbed. Move the links yourself, or move to a destination that is empty.',
+        `${uncopyable.list.length} ${uncopyable.what}, starting with ${quote(uncopyable.list[0])}. ` +
+        (crossesDevice
+          ? 'This move crosses a filesystem boundary, where it has to be a copy, and a copy ' +
+            'cannot carry those. '
+          : 'A move that also displaces an existing destination is not attempted with them ' +
+            'in the tree, because a failure partway would leave both sides disturbed. ') +
+        'Move them yourself, or move the rest without them.',
+    )
+  }
+  if (crossesDevice && size.kind === 'special') {
+    throw new ToolError(
+      'special_file',
+      `Refused: ${quote(source.realPath)} is a ${describeSpecial(source.stats)}, and this move ` +
+        'crosses a filesystem boundary, where it would have to be copied. Nothing was moved.',
     )
   }
 
@@ -315,9 +329,9 @@ export async function moveLocal(ctx, args) {
   }
 
   await mkdir(dirname(finalPath), { recursive: true })
-  let method
+  let outcome
   try {
-    method = await relocate(source.realPath, finalPath, source.stats)
+    outcome = await relocate(source.realPath, finalPath, source.stats)
   } catch (err) {
     // The destination was displaced a moment ago and the replacement did not
     // arrive. Put it back rather than leaving the user with an empty
@@ -346,13 +360,28 @@ export async function moveLocal(ctx, args) {
     throw err
   }
 
+  const left = outcome.leftInPlace
   return toolResult(
     `Moved ${size.kind} ${source.realPath} → ${finalPath} (${formatBytes(size.bytes)}).` +
+      (outcome.method === 'copy+remove'
+        ? ' It crossed a filesystem boundary, so it was copied, and every file was flushed and ' +
+          'verified by SHA-256 before its original was removed.'
+        : '') +
+      (left.length
+        ? ` ${left.length} source item(s) changed or appeared during the move and were left ` +
+          `where they were, starting with ${left[0]}.`
+        : '') +
       (displacedTo
         ? ` The ${displaced.kind} that was there (${displaced.files} file(s), ` +
           `${formatBytes(displaced.bytes)}) was moved to ${displacedTo}, not deleted.`
         : ''),
-    { performed: true, method, displaced_to: displacedTo, ...plan },
+    {
+      performed: true,
+      method: outcome.method,
+      source_left_in_place: left,
+      displaced_to: displacedTo,
+      ...plan,
+    },
   )
 }
 
