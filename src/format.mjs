@@ -67,16 +67,27 @@ export function toolFailure(err) {
 /**
  * Warnings a scan produced, as sentences worth putting in front of a user.
  *
- * Returns [] when the scan was clean, so callers can join unconditionally.
+ * `notScanned` is the list walkRoots() returns of roots the file budget never
+ * reached. Returns [] when the scan was clean, so callers can join
+ * unconditionally.
  */
-export function scanWarnings(perRoot) {
+export function scanWarnings(perRoot, notScanned = []) {
   const warnings = []
   const truncated = perRoot.filter((r) => r.truncated)
-  if (truncated.length) {
+  if (truncated.length || notScanned.length) {
+    const cap = (truncated[0] ?? perRoot[0])?.maxFiles
+    const where = []
+    if (truncated.length) where.push(`in ${truncated.map((r) => r.root).join(', ')}`)
+    if (notScanned.length) {
+      where.push(
+        `before reaching ${notScanned.join(', ')}, which ` +
+          `${notScanned.length === 1 ? 'was' : 'were'} not scanned at all`,
+      )
+    }
     warnings.push(
-      `Scan stopped at the ${truncated[0].maxFiles.toLocaleString()}-file cap in ` +
-        `${truncated.map((r) => r.root).join(', ')}. These results are PARTIAL — ` +
-        'narrow the path or raise the cap before drawing a conclusion from them.',
+      `Scan stopped at the ${cap === undefined ? 'file' : `${cap.toLocaleString()}-file`} cap ` +
+        `${where.join(' and ')}. These results are PARTIAL — narrow the path or raise ` +
+        'the cap before drawing a conclusion from them.',
     )
   }
   const unreadable = perRoot.reduce((n, r) => n + r.unreadable.length, 0)

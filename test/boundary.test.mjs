@@ -214,6 +214,14 @@ describe('the README does not drift from the code', () => {
       assert.ok(readme.includes(`\`${name}\``), `README does not document ${name}`)
     }
   })
+
+  it('describes the depth limit the walk applies: the root and 64 levels below it', async () => {
+    // walk() skips a directory when depth > maxDepth with the root at depth 0,
+    // so maxDepth 64 walks the root and 64 levels beneath it.
+    const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
+    assert.match(readme, /root and 64 levels of subdirectories/)
+    assert.doesNotMatch(readme, /64 directory levels/)
+  })
 })
 
 describe('release hygiene', () => {

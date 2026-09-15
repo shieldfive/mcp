@@ -76,9 +76,19 @@ Hashing is budgeted, though, and the budget can make the answer incomplete.
 Candidates are bucketed by size, screened on a hash of the first 64 KiB where
 the files are bigger than that, then confirmed with a full digest. Every read of
 either kind counts against `max_files_hashed`, 20,000 by default. When the
-budget runs out, whole same-size groups go unhashed and the result says how many
-and how much they could have been worth. Groups are processed largest-first, so
-what survives a tight budget is what was worth the most.
+budget runs out, the rest goes unhashed — the group it runs out in is hashed in
+part, oldest copies first — and the result says how many files and how much space
+were never checked. Groups are processed largest-first, so what survives a tight
+budget is what was worth the most.
+
+What counts as reclaimable is counted per file on disk. Names that are hardlinks
+to one file are one copy, because removing one of them frees nothing. APFS clones
+— what Finder's Duplicate makes on an APFS volume — share their storage too, but
+nothing this server can read tells a clone from a real copy, so clones are
+reported as reclaimable when trashing one frees little or nothing. The copy
+nominated to keep is the one modified earliest; a tie goes to the shorter path,
+then to the path in code-unit order, so the same tree always nominates the same
+copy.
 
 **It deletes nothing.** `trash_local` *moves* files into a
 `.shieldfive-mcp-trash` directory inside the root they came from, and writes a
@@ -117,7 +127,8 @@ listings 100. `find_large_files` starts at `min_bytes` 100,000,000 (100 MB).
 (`min_bytes` 1), hashes at most `max_files_hashed` 20,000 of them and returns
 100 groups, each listing at most 50 of its copies. `storage_summary` reports the
 top 15 extensions and top 15 directories. Every scan stops at `max_files`
-200,000 across all roots and 64 directory levels.
+200,000 files across all roots, and walks the root and 64 levels of
+subdirectories below it.
 
 `find_old_files` reports modification time, which is a weak signal: some copy
 operations reset it to the copy date, and an untouched file is not an unwanted
@@ -170,7 +181,7 @@ through a symlinked parent is caught before the write rather than after it.
 
 ## What the tests assert
 
-`npm test` runs 99 tests. The ones worth knowing about:
+`npm test` runs 107 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side.
@@ -196,7 +207,7 @@ imports the stdio transport and no HTTP one, which is also asserted.
 - **Sizes are file-content sizes.** They exclude directory overhead and ignore
   filesystem compression, sparse files and APFS clones, so totals will not match
   a disk utility exactly.
-- **Scans are capped** at 200,000 files and 64 directory levels by default. When
+- **Scans are capped** by default at 200,000 files, and at the root and 64 levels of subdirectories below it. When
   a cap is hit the result says so, in the summary line as well as in a field:
   a scan that stopped at a cap otherwise reads exactly like one that finished,
   and the assistant reports a partial list as the whole of it.
