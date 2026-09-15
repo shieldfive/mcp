@@ -3,6 +3,7 @@
 import { basename, dirname } from 'node:path'
 
 import { daysAgo, formatBytes, formatDate, scanWarnings, toolResult } from '../format.mjs'
+import { boundedInt, LIMITS } from '../limits.mjs'
 import { isInside, resolveExisting, ToolError } from '../roots.mjs'
 import { hashFile, walkRoots } from '../scan.mjs'
 
@@ -29,7 +30,7 @@ async function targets(ctx, path) {
 function scanOptions(args, ctx) {
   return {
     includeHidden: args.include_hidden ?? false,
-    maxFiles: args.max_files ?? 200_000,
+    maxFiles: boundedInt(args.max_files, { name: 'max_files', max: LIMITS.maxFiles, fallback: 200_000 }),
     // Plumbed so a cancelled request stops the walk. Without it the SDK's abort
     // signal was accepted and dropped, and a cancelled scan of a large tree ran
     // to completion burning CPU nobody was waiting for.
@@ -37,9 +38,26 @@ function scanOptions(args, ctx) {
   }
 }
 
+/** The row limit a listing returns, defaulted and bounded before any work. */
+function rowLimit(args, fallback) {
+  return boundedInt(args.limit, { name: 'limit', max: LIMITS.limit, fallback })
+}
+
+/**
+ * Where a scan went, for the payload.
+ *
+ * `scanned` is what was walked, not what was asked for: when the file budget
+ * runs out, later roots are never opened, and listing them as scanned made an
+ * empty result for them read as "nothing there".
+ */
+function coverage(perRoot, notScanned) {
+  return { scanned: perRoot.map((r) => r.root), not_scanned: notScanned }
+}
+
 export async function listLocal(ctx, args) {
   const roots = await targets(ctx, args.path)
-  const { files, perRoot } = await walkRoots(roots, scanOptions(args, ctx))
+  const limit = rowLimit(args, 200)
+  const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const sorted = files.sort((a, b) =>
     args.sort_by === 'size'
@@ -48,17 +66,16 @@ export async function listLocal(ctx, args) {
         ? b.mtimeMs - a.mtimeMs
         : a.path.localeCompare(b.path),
   )
-  const limit = args.limit ?? 200
   const shown = sorted.slice(0, limit)
   const totalBytes = files.reduce((n, f) => n + f.size, 0)
-  const warnings = scanWarnings(perRoot)
+  const warnings = scanWarnings(perRoot, notScanned)
 
   return toolResult(
     `${files.length.toLocaleString()} file(s), ${formatBytes(totalBytes)}. ` +
       `Showing ${shown.length}${files.length > shown.length ? ` of ${files.length} (limit ${limit})` : ''}.` +
       (warnings.length ? ` ${warnings.join(' ')}` : ''),
     {
-      scanned: roots.map((r) => r.realPath),
+      ...coverage(perRoot, notScanned),
       total_files: files.length,
       total_bytes: totalBytes,
       shown: shown.length,
@@ -76,20 +93,20 @@ export async function listLocal(ctx, args) {
 
 export async function findLargeFiles(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
   const threshold = args.min_bytes ?? 100_000_000
-  const { files, perRoot } = await walkRoots(roots, scanOptions(args, ctx))
+  const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const big = files.filter((f) => f.size >= threshold).sort((a, b) => b.size - a.size)
-  const limit = args.limit ?? 100
   const shown = big.slice(0, limit)
-  const warnings = scanWarnings(perRoot)
+  const warnings = scanWarnings(perRoot, notScanned)
 
   return toolResult(
     `${big.length} file(s) at or above ${formatBytes(threshold)}, ` +
       `${formatBytes(big.reduce((n, f) => n + f.size, 0))} in total.` +
       (warnings.length ? ` ${warnings.join(' ')}` : ''),
     {
-      scanned: roots.map((r) => r.realPath),
+      ...coverage(perRoot, notScanned),
       threshold_bytes: threshold,
       match_count: big.length,
       matched_bytes: big.reduce((n, f) => n + f.size, 0),
@@ -108,15 +125,15 @@ export async function findLargeFiles(ctx, args) {
 
 export async function findOldFiles(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
   const days = args.older_than_days ?? 365
   const now = ctx.now()
   const cutoff = now - days * 86_400_000
-  const { files, perRoot } = await walkRoots(roots, scanOptions(args, ctx))
+  const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const old = files.filter((f) => f.mtimeMs < cutoff).sort((a, b) => a.mtimeMs - b.mtimeMs)
-  const limit = args.limit ?? 100
   const shown = old.slice(0, limit)
-  const warnings = scanWarnings(perRoot)
+  const warnings = scanWarnings(perRoot, notScanned)
   warnings.push(
     'Modification time is not evidence a file is unwanted, and on some copy ' +
       'operations it is reset to the copy date. Treat this as a shortlist to review.',
@@ -130,7 +147,7 @@ export async function findOldFiles(ctx, args) {
       `${formatBytes(old.reduce((n, f) => n + f.size, 0))} in total.` +
       (warnings.length ? ` ${warnings.join(' ')}` : ''),
     {
-      scanned: roots.map((r) => r.realPath),
+      ...coverage(perRoot, notScanned),
       older_than_days: days,
       match_count: old.length,
       matched_bytes: old.reduce((n, f) => n + f.size, 0),
@@ -150,7 +167,8 @@ export async function findOldFiles(ctx, args) {
 
 export async function storageSummary(ctx, args) {
   const roots = await targets(ctx, args.path)
-  const { files, perRoot } = await walkRoots(roots, scanOptions(args, ctx))
+  const limit = rowLimit(args, 15)
+  const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const byExtension = new Map()
   const byDirectory = new Map()
@@ -192,13 +210,13 @@ export async function storageSummary(ctx, args) {
       }))
 
   const totalBytes = files.reduce((n, f) => n + f.size, 0)
-  const warnings = scanWarnings(perRoot)
+  const warnings = scanWarnings(perRoot, notScanned)
 
   return toolResult(
     `${files.length.toLocaleString()} file(s), ${formatBytes(totalBytes)} across ` +
-      `${roots.length} location(s).` + (warnings.length ? ` ${warnings.join(' ')}` : ''),
+      `${perRoot.length} location(s).` + (warnings.length ? ` ${warnings.join(' ')}` : ''),
     {
-      scanned: roots.map((r) => r.realPath),
+      ...coverage(perRoot, notScanned),
       total_files: files.length,
       total_bytes: totalBytes,
       total_bytes_human: formatBytes(totalBytes),
@@ -209,16 +227,50 @@ export async function storageSummary(ctx, args) {
         directories: r.directories,
         truncated: r.truncated,
       })),
-      largest_by_extension: top(byExtension, args.limit ?? 15),
-      largest_directories: top(byDirectory, args.limit ?? 15),
+      largest_by_extension: top(byExtension, limit),
+      largest_directories: top(byDirectory, limit),
       note:
         'Sizes are what the filesystem reports for file contents. They exclude ' +
         'directory overhead and do not account for filesystem compression, ' +
-        'sparse files or APFS clones, so this will not match a disk utility exactly. ' +
-        'largest_directories counts each file against every ancestor directory, so ' +
-        'a parent and its child both appear and their totals overlap by design.',
+        'sparse files, hardlinks or APFS clones, so this will not match a disk ' +
+        'utility exactly. largest_directories counts each file against every ' +
+        'ancestor directory, so a parent and its child both appear and their ' +
+        'totals overlap by design.',
     },
   )
+}
+
+/**
+ * The order in which copies of one file are nominated to keep, as a comparator.
+ *
+ * The earliest modification time first. A tie is the ordinary case rather than
+ * an edge -- Finder's Duplicate and `cp -p` both keep the original's mtime --
+ * and it used to fall back to whatever order the directory listed its entries
+ * in, so the same tree could nominate a different keeper on another filesystem.
+ * A tie goes to the shorter path, which keeps "report.pdf" over
+ * "report copy.pdf", and then to the path in code-unit order, which does not
+ * depend on the locale.
+ */
+export function compareKeeper(a, b) {
+  if (a.mtimeMs !== b.mtimeMs) return a.mtimeMs - b.mtimeMs
+  if (a.path.length !== b.path.length) return a.path.length - b.path.length
+  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+}
+
+/**
+ * A key that two walk entries share only when they are names of one file.
+ *
+ * It is used to REDUCE what is reported as reclaimable, never to decide that
+ * two files hold the same bytes; that stays the job of the full SHA-256. A file
+ * with a single link gets a key of its own, and so does one whose device or
+ * inode number did not survive conversion to a JavaScript number, so a lossy
+ * number cannot fold two different files together.
+ */
+function sameFileKey(f) {
+  if (f.nlink > 1 && Number.isSafeInteger(f.dev) && Number.isSafeInteger(f.ino) && f.ino > 0) {
+    return `inode:${f.dev}:${f.ino}`
+  }
+  return `path:${f.path}`
 }
 
 /**
@@ -235,16 +287,25 @@ export async function storageSummary(ctx, args) {
  * unbounded whole-file reads — on 4 MB files, 61x the work the number implied.
  *
  * Groups are processed in descending order of what they could reclaim, and the
- * budget is spent per file rather than per group. The old all-or-nothing gate
- * skipped a group entirely if it did not fit, and since a group is large
- * precisely because it has many copies, the budget was biased against the
- * groups worth the most.
+ * budget is spent per file. A group whose worst case does not fit in what is
+ * left is hashed in part rather than skipped: the old all-or-nothing gate passed
+ * over the most valuable group and spent the budget on the smaller ones behind
+ * it, which is the opposite of largest-first.
+ *
+ * What is reclaimable is counted per file on disk, not per name. Two hardlinks
+ * to one file hash identically and are one copy; removing either frees nothing.
  */
 export async function findDuplicates(ctx, args) {
   const HEAD_WINDOW = 65_536
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
+  const budget = boundedInt(args.max_files_hashed, {
+    name: 'max_files_hashed',
+    max: LIMITS.maxFilesHashed,
+    fallback: 20_000,
+  })
   const minSize = args.min_bytes ?? 1
-  const { files, perRoot } = await walkRoots(roots, scanOptions(args, ctx))
+  const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   // A zero-byte file is identical to every other zero-byte file, which is true
   // and useless. Excluded unless min_bytes: 0 asks for them explicitly, and
@@ -260,11 +321,13 @@ export async function findDuplicates(ctx, args) {
 
   const sizeGroups = [...bySize.values()]
     .filter((g) => g.length > 1)
-    .sort((a, b) => b[0].size * (b.length - 1) - a[0].size * (a.length - 1))
+    .sort(
+      (a, b) =>
+        b[0].size * (b.length - 1) - a[0].size * (a.length - 1) || b[0].size - a[0].size,
+    )
 
-  const budget = args.max_files_hashed ?? 20_000
   let reads = 0
-  const skippedGroups = []
+  const shortfall = [] // { size, files, hashed } for every group not hashed whole
   const unreadable = []
 
   const hash = async (f, limit) => {
@@ -277,19 +340,27 @@ export async function findDuplicates(ctx, args) {
   for (const group of sizeGroups) {
     ctx?.signal?.throwIfAborted?.()
 
-    // Worst case for this group: a head read and a full read per file. Small
-    // files skip the head pass because it would read the very same bytes.
+    // Worst case per file: a head read and a full read. Small files skip the
+    // head pass because it would read the very same bytes.
     const needsHead = group[0].size > HEAD_WINDOW
-    const worstCase = group.length * (needsHead ? 2 : 1)
-    if (reads + worstCase > budget) {
-      skippedGroups.push({ size: group[0].size, copies: group.length })
+    const affordable = Math.floor((budget - reads) / (needsHead ? 2 : 1))
+
+    // One file on its own proves nothing, so a group that cannot get two is
+    // left out whole, and what remains of the budget flows on to smaller groups.
+    if (affordable < 2) {
+      shortfall.push({ size: group[0].size, files: group.length, hashed: 0 })
       continue
     }
+    let members = group
+    if (affordable < group.length) {
+      members = [...group].sort(compareKeeper).slice(0, affordable)
+      shortfall.push({ size: group[0].size, files: group.length, hashed: members.length })
+    }
 
-    let survivors = group
+    let survivors = members
     if (needsHead) {
       const byHead = new Map()
-      for (const f of group) {
+      for (const f of members) {
         let head
         try {
           head = await hash(f, HEAD_WINDOW)
@@ -319,39 +390,87 @@ export async function findDuplicates(ctx, args) {
   }
 
   const COPIES_SHOWN = 50
-  const duplicates = [...byFull.entries()]
-    .filter(([, group]) => group.length > 1)
-    .map(([digest, group]) => {
-      const ordered = [...group].sort((a, b) => a.mtimeMs - b.mtimeMs)
-      const [keep, ...redundant] = ordered
-      return {
-        sha256: digest,
-        size: keep.size,
-        size_human: formatBytes(keep.size),
-        copies: ordered.length,
-        reclaimable_bytes: keep.size * redundant.length,
-        oldest_copy: { path: keep.path, modified: formatDate(keep.mtimeMs) },
-        // Bounded. `limit` caps the number of GROUPS; without this a single
-        // 12,000-copy group produced a multi-megabyte payload regardless of it.
-        other_copies: redundant.slice(0, COPIES_SHOWN).map((f) => ({
-          path: f.path,
-          modified: formatDate(f.mtimeMs),
-        })),
-        other_copies_omitted: Math.max(0, redundant.length - COPIES_SHOWN),
-        names_differ: new Set(ordered.map((f) => basename(f.path))).size > 1,
-      }
+  const duplicates = []
+  let extraNames = 0
+  let singleFileSets = 0
+
+  for (const [digest, group] of byFull) {
+    if (group.length < 2) continue
+
+    // One entry per file on disk. Its names are ordered like copies are, and
+    // the first one stands for it.
+    const byFile = new Map()
+    for (const f of group) {
+      const key = sameFileKey(f)
+      const names = byFile.get(key) ?? []
+      names.push(f)
+      byFile.set(key, names)
+    }
+    const copies = [...byFile.values()]
+      .map((names) => names.sort(compareKeeper))
+      .sort((a, b) => compareKeeper(a[0], b[0]))
+
+    if (copies.length < 2) {
+      singleFileSets++
+      continue
+    }
+    extraNames += group.length - copies.length
+
+    const entry = (names) => ({
+      path: names[0].path,
+      modified: formatDate(names[0].mtimeMs),
+      ...(names.length > 1
+        ? { hardlinked_names: names.slice(1, 1 + COPIES_SHOWN).map((n) => n.path) }
+        : {}),
     })
-    .sort((a, b) => b.reclaimable_bytes - a.reclaimable_bytes)
+    const [keep, ...redundant] = copies
+    duplicates.push({
+      sha256: digest,
+      size: keep[0].size,
+      size_human: formatBytes(keep[0].size),
+      copies: copies.length,
+      names: group.length,
+      reclaimable_bytes: keep[0].size * redundant.length,
+      oldest_copy: entry(keep),
+      // Bounded. `limit` caps the number of GROUPS; without this a single
+      // 12,000-copy group produced a multi-megabyte payload regardless of it.
+      other_copies: redundant.slice(0, COPIES_SHOWN).map(entry),
+      other_copies_omitted: Math.max(0, redundant.length - COPIES_SHOWN),
+      names_differ: new Set(group.map((f) => basename(f.path))).size > 1,
+    })
+  }
+  duplicates.sort(
+    (a, b) =>
+      b.reclaimable_bytes - a.reclaimable_bytes || compareKeeper(a.oldest_copy, b.oldest_copy),
+  )
 
   const reclaimable = duplicates.reduce((n, d) => n + d.reclaimable_bytes, 0)
-  const warnings = scanWarnings(perRoot)
-  if (skippedGroups.length) {
-    const unchecked = skippedGroups.reduce((n, g) => n + g.size * (g.copies - 1), 0)
+  const warnings = scanWarnings(perRoot, notScanned)
+  if (shortfall.length) {
+    const filesNotHashed = shortfall.reduce((n, g) => n + g.files - g.hashed, 0)
+    const partial = shortfall.filter((g) => g.hashed > 0).length
+    // Each file never hashed could duplicate a copy already found, except that
+    // in a group where nothing was hashed one of them would be the keeper.
+    const unchecked = shortfall.reduce((n, g) => n + g.size * (g.files - Math.max(g.hashed, 1)), 0)
     warnings.push(
       `The hashing budget of ${budget.toLocaleString()} reads was reached, so ` +
-        `${skippedGroups.length} same-size group(s) covering up to ` +
-        `${formatBytes(unchecked)} were never hashed and are absent below. This result ` +
-        'is a lower bound — raise max_files_hashed for a complete answer.',
+        `${filesNotHashed.toLocaleString()} file(s) in ${shortfall.length} same-size group(s)` +
+        `${partial ? ` (${partial} of them hashed in part)` : ''} were never hashed, covering ` +
+        `up to ${formatBytes(unchecked)} that is absent below. This result is a lower bound — ` +
+        'raise max_files_hashed for a complete answer.',
+    )
+  }
+  if (extraNames) {
+    warnings.push(
+      `${extraNames} name(s) below are hardlinks to a copy already counted (hardlinked_names). ` +
+        'Removing one of those names frees no space; a copy’s space comes back only when all ' +
+        'of its names are gone.',
+    )
+  }
+  if (singleFileSets) {
+    warnings.push(
+      `${singleFileSets} set(s) of matching names are hardlinks to a single file and are not ` +
+        'listed: removing one of those names frees no space.',
     )
   }
   if (unreadable.length) {
@@ -361,17 +480,18 @@ export async function findDuplicates(ctx, args) {
     warnings.push('min_bytes: 0 was given, so empty files are included; every empty file matches every other.')
   }
 
-  const limit = args.limit ?? 100
   return toolResult(
     `${duplicates.length} duplicate group(s), ${formatBytes(reclaimable)} reclaimable ` +
       'by keeping one copy of each. Every match is confirmed by a full SHA-256 of the ' +
       'file contents.' + (warnings.length ? ` ${warnings.join(' ')}` : ''),
     {
-      scanned: roots.map((r) => r.realPath),
+      ...coverage(perRoot, notScanned),
       files_considered: candidates.length,
       hash_reads: reads,
       hash_budget: budget,
-      groups_skipped_for_budget: skippedGroups.length,
+      groups_skipped_for_budget: shortfall.filter((g) => g.hashed === 0).length,
+      groups_partially_hashed: shortfall.filter((g) => g.hashed > 0).length,
+      files_not_hashed: shortfall.reduce((n, g) => n + g.files - g.hashed, 0),
       duplicate_groups: duplicates.length,
       reclaimable_bytes: reclaimable,
       reclaimable_human: formatBytes(reclaimable),
@@ -383,7 +503,12 @@ export async function findDuplicates(ctx, args) {
         'Grouped by exact byte size, then (for files over 64 KiB) by SHA-256 of the ' +
         'first 64 KiB, then confirmed by SHA-256 of the entire file. Filenames are not ' +
         'used to decide identity; `names_differ` is reported only so you can see when ' +
-        'copies were renamed. Empty files are excluded unless min_bytes: 0.',
+        'copies were renamed. Names that are hardlinks to one file (same device and ' +
+        'inode) are one copy: they are listed under `hardlinked_names` and never counted ' +
+        'as reclaimable. APFS clones also share storage but cannot be told apart from ' +
+        'real copies, so for them reclaimable_bytes over-states what trashing frees. ' +
+        '`oldest_copy` is the copy modified earliest; a tie goes to the shorter path, ' +
+        'then to the path in code-unit order. Empty files are excluded unless min_bytes: 0.',
       groups: duplicates.slice(0, limit),
     },
   )

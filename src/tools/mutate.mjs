@@ -1,6 +1,6 @@
 // The four tools that change the filesystem.
 //
-// Two rules hold across all of them, and they are the reason this server is
+// Three rules hold across all of them, and they are the reason this server is
 // safe to point at a real home directory.
 //
 // 1. Nothing happens without `confirm: true`. Called without it, each tool
@@ -14,31 +14,93 @@
 //    mattered most: overwriting a directory destroyed every file underneath it,
 //    unrecoverably, with only the SOURCE's byte count shown in the preview.
 //    Overwriting now MOVES the existing destination into the trash first, so
-//    the bytes survive and the manifest records where they were.
+//    the bytes survive and the manifest records where they were. trash.mjs
+//    keeps the trash a real directory, on the item's own volume, with a
+//    manifest written before anything moves.
 //
-// The only `rm` calls left are in the cross-device copy fallback, where they
-// remove a source whose bytes have already been written to the destination.
+// 3. A tool acts on the entry it was given. A symlink passed as the thing to
+//    move, rename or trash is moved, renamed or trashed itself; its target is
+//    never touched.
+//
+// The only thing of the user's ever removed is the source of a move that
+// crosses a device, and only once its copy has been flushed and verified; see
+// fsops.mjs. Everything else removed is this server's own temporary state.
 
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, relative, sep } from 'node:path'
+import { lstat, mkdir, readdir } from 'node:fs/promises'
+import { basename, dirname, join, sep } from 'node:path'
 
-import { formatBytes, toolResult } from '../format.mjs'
-import { isInside, resolveExisting, resolveTarget, ToolError } from '../roots.mjs'
+import { formatBytes, quote, toolResult } from '../format.mjs'
+import {
+  describeSpecial,
+  moveFileAcrossDevices,
+  moveTreeAcrossDevices,
+  renameNoReplace,
+} from '../fsops.mjs'
+import { boundedList, LIMITS } from '../limits.mjs'
+import { isInside, resolveDestination, resolveEntry, resolveTarget, ToolError } from '../roots.mjs'
 import { TRASH_DIR_NAME } from '../scan.mjs'
+import {
+  batchName,
+  discardBatch,
+  inspectTrashDir,
+  inTrash,
+  makeParents,
+  moveIntoTrash,
+  openBatch,
+  trashBaseFor,
+  trashPaths,
+  writeManifest,
+} from '../trash.mjs'
 
-/** Total bytes and file count beneath a path, for reporting before a move. */
+export { trashStamp } from '../trash.mjs'
+
+/**
+ * Refuse to start changing anything once the request has been cancelled.
+ *
+ * The signal reached every tool, and the mutating ones never looked at it, so
+ * a move or a trash the user had already called off ran to completion.
+ */
+function refuseIfCancelled(ctx) {
+  if (ctx.signal?.aborted) {
+    throw new ToolError('cancelled', 'Cancelled before anything was changed.')
+  }
+}
+
+/** What an lstat says an entry is, in the words the previews use. */
+function kindOf(stats) {
+  if (stats.isSymbolicLink()) return 'symlink'
+  if (stats.isDirectory()) return 'directory'
+  if (stats.isFile()) return 'file'
+  return 'special'
+}
+
+/**
+ * Total bytes and file count beneath a path, for reporting before a move.
+ *
+ * lstat throughout: an item that is a symlink is measured as the link that
+ * will move, not as the tree it points to.
+ */
 async function measure(path) {
   let st
   try {
-    st = await stat(path)
+    st = await lstat(path)
   } catch {
-    return { files: 0, bytes: 0, kind: 'missing', symlinks: [] }
+    return { files: 0, bytes: 0, kind: 'missing', symlinks: [], special: [] }
   }
-  if (st.isFile()) return { files: 1, bytes: st.size, kind: 'file', symlinks: [] }
+  if (!st.isDirectory()) {
+    return {
+      files: st.isFile() ? 1 : 0,
+      bytes: st.isFile() ? st.size : 0,
+      kind: kindOf(st),
+      symlinks: [],
+      special: [],
+    }
+  }
 
   let files = 0
   let bytes = 0
   const symlinks = []
+  const special = []
   const queue = [path]
   while (queue.length) {
     const dir = queue.shift()
@@ -55,9 +117,10 @@ async function measure(path) {
         continue
       }
       if (e.isDirectory()) queue.push(full)
-      else if (e.isFile()) {
+      else if (!e.isFile()) special.push(full)
+      else {
         try {
-          const s = await stat(full)
+          const s = await lstat(full)
           files++
           bytes += s.size
         } catch {
@@ -70,149 +133,90 @@ async function measure(path) {
       }
     }
   }
-  return { files, bytes, kind: 'directory', symlinks }
-}
-
-/** rename(2), falling back to copy+remove when the move crosses a device. */
-async function relocate(from, to) {
-  try {
-    await rename(from, to)
-    return 'rename'
-  } catch (err) {
-    if (err.code !== 'EXDEV') throw err
-  }
-
-  const st = await stat(from)
-  if (st.isFile()) {
-    await copyFile(from, to)
-    await rm(from)
-    return 'copy+remove'
-  }
-
-  // Stage the copy beside the target and rename it into place only once the
-  // whole tree has landed. Copying straight into `to` left a partial tree there
-  // when anything threw mid-walk -- and the source was already torn in half by
-  // the older interleaved copy+remove. Now a failure leaves the source
-  // untouched and nothing at the destination.
-  const staging = `${to}.shieldfive-mcp-incoming`
-  await rm(staging, { recursive: true, force: true })
-  try {
-    await copyTree(from, staging)
-  } catch (err) {
-    await rm(staging, { recursive: true, force: true })
-    throw err
-  }
-  await rename(staging, to)
-  await rm(from, { recursive: true })
-  return 'copy+remove'
-}
-
-async function copyTree(from, to) {
-  await mkdir(to, { recursive: true })
-  for (const e of await readdir(from, { withFileTypes: true })) {
-    if (e.isSymbolicLink()) {
-      throw new ToolError(
-        'symlink_in_tree',
-        `Refused: ${join(from, e.name)} is a symlink, and this move crosses a ` +
-          'filesystem boundary so it cannot be preserved. Nothing has been ' +
-          'removed. Move it yourself or remove the link first.',
-      )
-    }
-    if (e.isDirectory()) await copyTree(join(from, e.name), join(to, e.name))
-    else if (e.isFile()) await copyFile(join(from, e.name), join(to, e.name))
-  }
-}
-
-async function exists(path) {
-  try {
-    await stat(path)
-    return true
-  } catch {
-    return false
-  }
-}
-
-export function trashStamp(now) {
-  return new Date(now).toISOString().replace(/[:.]/g, '-')
+  return { files, bytes, kind: 'directory', symlinks, special }
 }
 
 /**
- * Where an item goes when it is trashed.
+ * Move without replacing anything, and across a device only by a verified copy.
  *
- * The root is passed in rather than recovered from the destination string. The
- * previous version derived it with
- * `destination.indexOf(sep + TRASH_DIR_NAME + sep)`, which finds the FIRST
- * occurrence — so a user whose root path happens to contain a directory named
- * `.shieldfive-mcp-trash` had the manifest written outside their root.
+ * Returns how the item moved and, after a copy, the source entries left in
+ * place because they changed once they had been copied.
  */
-export function trashDestination(rootRealPath, itemRealPath, stamp) {
-  return join(rootRealPath, TRASH_DIR_NAME, stamp, relative(rootRealPath, itemRealPath))
+async function relocate(from, to, stats, signal) {
+  try {
+    await renameNoReplace(from, to, stats)
+    return { method: 'rename', leftInPlace: [] }
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err
+  }
+  if (stats.isFile()) {
+    return { method: 'copy+remove', leftInPlace: await moveFileAcrossDevices(from, to, stats, signal) }
+  }
+  if (stats.isDirectory()) {
+    return { method: 'copy+remove', leftInPlace: await moveTreeAcrossDevices(from, to, signal) }
+  }
+  throw new ToolError(
+    'special_file',
+    `Refused: ${quote(from)} is a ${describeSpecial(stats)}, and this move crosses a filesystem ` +
+      'boundary, where it would have to be copied. Nothing was moved.',
+  )
 }
 
-/** Append to the manifest for one trash batch, creating it if absent. */
-async function recordInManifest(rootRealPath, stamp, entries, now) {
-  const manifestPath = join(rootRealPath, TRASH_DIR_NAME, stamp, 'manifest.json')
-
-  let existing = []
-  try {
-    existing = JSON.parse(await readFile(manifestPath, 'utf8')).items ?? []
-  } catch {
-    /* first write of this batch */
+/** The device of `path`, or of its nearest existing ancestor. */
+async function nearestDevice(path) {
+  for (let dir = path; ; dir = dirname(dir)) {
+    try {
+      return (await lstat(dir)).dev
+    } catch (err) {
+      if (dirname(dir) === dir) throw err
+    }
   }
-
-  await mkdir(dirname(manifestPath), { recursive: true })
-  await writeFile(
-    manifestPath,
-    JSON.stringify(
-      {
-        created: new Date(now).toISOString(),
-        note:
-          'Written by @shieldfive/mcp. Nothing here is deleted. To restore an ' +
-          'entry, move trashed_to back to original_path.',
-        items: [...existing, ...entries],
-      },
-      null,
-      2,
-    ),
-    'utf8',
-  )
-  return manifestPath
 }
 
 export async function moveLocal(ctx, args) {
-  const source = await resolveExisting(ctx.roots, args.source, { what: 'source' })
-  const dest = await resolveTarget(ctx.roots, args.destination, { what: 'destination' })
+  const source = await resolveEntry(ctx.roots, args.source, { what: 'source' })
+  const dest = await resolveDestination(ctx.roots, args.destination, { what: 'destination' })
 
-  // Resolve the final path before any guard runs. Checking the destination
+  // A real directory at the destination means "move into it". A symlink there
+  // is an entry in its own right: the source can replace the link, with
+  // overwrite, but never lands wherever the link points.
+  //
+  // The final path is resolved before any guard runs. Checking the destination
   // argument alone missed the worst case: moving /root/sub onto its parent
   // /root gives a final path of /root/sub — the source itself — which the old
   // guard passed and the old overwrite branch then deleted.
-  const destIsDirectory = dest.exists && (await stat(dest.realPath)).isDirectory()
-  const finalPath = destIsDirectory ? join(dest.realPath, basename(source.realPath)) : dest.realPath
+  const finalPath = dest.stats?.isDirectory()
+    ? join(dest.realPath, basename(source.realPath))
+    : dest.realPath
 
   if (finalPath === source.realPath) {
     throw new ToolError(
       'destination_is_source',
-      `Refused: that resolves to ${finalPath}, which is the source itself. ` +
+      `Refused: that resolves to ${quote(finalPath)}, which is the source itself. ` +
         'Nothing to do.',
     )
   }
   if (isInside(finalPath, source.realPath)) {
     throw new ToolError(
       'destination_inside_source',
-      `Refused: ${finalPath} is inside ${source.realPath}. Moving a directory ` +
+      `Refused: ${quote(finalPath)} is inside ${quote(source.realPath)}. Moving a directory ` +
         'into its own subtree is not a move.',
     )
   }
 
-  const finalResolved = await resolveTarget(ctx.roots, finalPath, { what: 'destination' })
-  const collision = await exists(finalPath)
+  const final = await resolveDestination(ctx.roots, finalPath, { what: 'destination' })
+  const collision = final.stats !== null
 
   if (collision && !args.overwrite) {
     throw new ToolError(
       'destination_exists',
-      `Refused: ${finalPath} already exists. Pass overwrite: true to move it to ` +
-        'the trash and take its place, or choose a different destination.',
+      `Refused: ${quote(finalPath)} already exists` +
+        (final.stats.isSymbolicLink()
+          ? ' as a symlink. The link itself would be replaced, not what it points to; to ' +
+            'move into a directory a link points to, give that directory’s real path'
+          : '') +
+        '. Pass overwrite: true to move it to the trash and take its place, or choose a ' +
+        'different destination.',
     )
   }
 
@@ -220,23 +224,47 @@ export async function moveLocal(ctx, args) {
   const displaced = collision
     ? await measure(finalPath)
     : { files: 0, bytes: 0, kind: 'none', symlinks: [] }
-  const stamp = trashStamp(ctx.now())
 
-  // A symlink inside the source cannot survive a cross-device move, and
-  // relocate() throws when it reaches one. Refusing HERE rather than there is
-  // the difference between a clean refusal and one raised after the existing
-  // destination has already been displaced. Checked for every move, not only
+  // Where a displaced item would go, checked now so that an unsafe trash
+  // directory is a refusal in the preview and not a failure halfway through.
+  let trash = null
+  if (collision) {
+    const base = await trashBaseFor(final.root.realPath, finalPath, final.stats)
+    await inspectTrashDir(base)
+    const batch = batchName(ctx.now())
+    trash = { base, batch, destination: trashPaths(base, batch, finalPath).destination }
+  }
+
+  // A symlink or a special file inside the source cannot survive a
+  // cross-device move, and the copy refuses when it reaches one. Refusing HERE
+  // is the difference between a clean refusal and one raised partway through.
+  // It is checked for every move that displaces a destination, not only
   // cross-device ones, because whether two paths share a device is not
-  // something the caller can see and a refusal that depends on it is worse
-  // than one that does not.
-  if (size.symlinks?.length && collision) {
+  // something the caller can see; and for any move that is known to cross one.
+  const crossesDevice = source.stats.dev !== (await nearestDevice(dirname(finalPath)))
+  const uncopyable = size.symlinks.length
+    ? { code: 'symlink_in_tree', what: 'symlink(s)', list: size.symlinks }
+    : size.special.length
+      ? { code: 'special_file_in_tree', what: 'FIFO(s), socket(s) or device file(s)', list: size.special }
+      : null
+  if (uncopyable && (collision || crossesDevice)) {
     throw new ToolError(
-      'symlink_in_tree',
-      `Refused before changing anything: ${source.realPath} contains ` +
-        `${size.symlinks.length} symlink(s), starting with ${size.symlinks[0]}. ` +
-        'A move that also displaces an existing destination is not attempted with ' +
-        'links in the tree, because a failure partway would leave both sides ' +
-        'disturbed. Move the links yourself, or move to a destination that is empty.',
+      uncopyable.code,
+      `Refused before changing anything: ${quote(source.realPath)} contains ` +
+        `${uncopyable.list.length} ${uncopyable.what}, starting with ${quote(uncopyable.list[0])}. ` +
+        (crossesDevice
+          ? 'This move crosses a filesystem boundary, where it has to be a copy, and a copy ' +
+            'cannot carry those. '
+          : 'A move that also displaces an existing destination is not attempted with them ' +
+            'in the tree, because a failure partway would leave both sides disturbed. ') +
+        'Move them yourself, or move the rest without them.',
+    )
+  }
+  if (crossesDevice && size.kind === 'special') {
+    throw new ToolError(
+      'special_file',
+      `Refused: ${quote(source.realPath)} is a ${describeSpecial(source.stats)}, and this move ` +
+        'crosses a filesystem boundary, where it would have to be copied. Nothing was moved.',
     )
   }
 
@@ -255,7 +283,7 @@ export async function moveLocal(ctx, args) {
           files: displaced.files,
           bytes: displaced.bytes,
           bytes_human: formatBytes(displaced.bytes),
-          moved_to_trash: trashDestination(finalResolved.root.realPath, finalPath, stamp),
+          moved_to_trash: trash.destination,
         }
       : null,
   }
@@ -273,93 +301,164 @@ export async function moveLocal(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
+
   // Re-resolve immediately before the write. It does not close the
   // time-of-check/time-of-use window — nothing path-based can, and SECURITY.md
   // says so — but it narrows it from "however long measure() took on a large
   // tree" to the gap between these two statements.
-  await resolveTarget(ctx.roots, finalPath, { what: 'destination' })
-
-  let displacedTo = null
-  if (collision) {
-    displacedTo = trashDestination(finalResolved.root.realPath, finalPath, stamp)
-    await mkdir(dirname(displacedTo), { recursive: true })
-    await relocate(finalPath, displacedTo)
-    await recordInManifest(
-      finalResolved.root.realPath,
-      stamp,
-      [{ original_path: finalPath, trashed_to: displacedTo, bytes: displaced.bytes, reason: 'displaced by a move' }],
-      ctx.now(),
+  const current = await resolveDestination(ctx.roots, finalPath, { what: 'destination' })
+  if ((current.stats !== null) !== collision) {
+    throw new ToolError(
+      'destination_changed',
+      `Refused: ${quote(finalPath)} ${collision ? 'disappeared' : 'appeared'} while this move ` +
+        'was being planned. Nothing was moved; call again to see the new plan.',
     )
   }
 
-  await mkdir(dirname(finalPath), { recursive: true })
-  let method
+  let displacedTo = null
+  let batch = null
+  if (collision) {
+    // The manifest entry is written before the displaced item moves, so there
+    // is no moment at which it is in the trash and recorded nowhere.
+    batch = await openBatch(trash.base, trash.batch)
+    batch.entries = [
+      {
+        original_path: finalPath,
+        trashed_to: trash.destination,
+        kind: displaced.kind,
+        bytes: displaced.bytes,
+        reason: 'displaced by a move',
+      },
+    ]
+    try {
+      await writeManifest(batch, ctx.now())
+      await makeParents(batch, trash.destination)
+      await moveIntoTrash(finalPath, trash.destination, current.stats)
+    } catch (err) {
+      await discardBatch(batch)
+      throw err
+    }
+    displacedTo = trash.destination
+  }
+
+  let outcome
   try {
-    method = await relocate(source.realPath, finalPath)
+    // A cancellation that arrived while the destination was being displaced
+    // stops the move here, and the displaced item is put back below. One that
+    // arrives during a copy across devices stops it before the copy is put in
+    // place. Once the source has started to be removed, the move completes.
+    refuseIfCancelled(ctx)
+    await mkdir(dirname(finalPath), { recursive: true })
+    outcome = await relocate(source.realPath, finalPath, source.stats, ctx.signal)
   } catch (err) {
     // The destination was displaced a moment ago and the replacement did not
     // arrive. Put it back rather than leaving the user with an empty
     // destination and an error that reads as though nothing happened.
     if (displacedTo) {
       try {
-        await relocate(displacedTo, finalPath)
-        throw new ToolError(
-          'move_failed_destination_restored',
-          `The move failed (${err.message}). The item that was at ${finalPath} has ` +
-            'been put back, and the source is untouched.',
-        )
+        await renameNoReplace(displacedTo, finalPath, current.stats)
       } catch (restoreErr) {
-        if (restoreErr instanceof ToolError && restoreErr.code === 'move_failed_destination_restored') {
-          throw restoreErr
-        }
         throw new ToolError(
           'move_failed_destination_in_trash',
-          `The move failed (${err.message}) and the item that was at ${finalPath} ` +
-            `could not be put back (${restoreErr.message}). It is NOT lost -- it is at ` +
-            `${displacedTo} and recorded in the manifest beside it.`,
+          `The move ${err.code === 'cancelled' ? 'was cancelled' : `failed (${err.message})`} and the ` +
+            `item that was at ${quote(finalPath)} could not be put back (${restoreErr.message}). ` +
+            `It is NOT lost -- it is at ${quote(displacedTo)} and recorded in the manifest beside it.`,
         )
       }
+      await discardBatch(batch)
+      if (err.code === 'cancelled') {
+        throw new ToolError(
+          'cancelled',
+          `Cancelled before the move finished. The item that was at ${quote(finalPath)} has ` +
+            'been put back, and the source is untouched.',
+        )
+      }
+      throw new ToolError(
+        'move_failed_destination_restored',
+        `The move failed (${err.message}). The item that was at ${quote(finalPath)} has ` +
+          'been put back, and the source is untouched.',
+      )
     }
     throw err
   }
 
+  const left = outcome.leftInPlace
   return toolResult(
     `Moved ${size.kind} ${source.realPath} → ${finalPath} (${formatBytes(size.bytes)}).` +
+      (outcome.method === 'copy+remove'
+        ? ' It crossed a filesystem boundary, so it was copied, and every file was flushed and ' +
+          'verified by SHA-256 before its original was removed.'
+        : '') +
+      (left.length
+        ? ` ${left.length} source item(s) changed or appeared during the move and were left ` +
+          `where they were, starting with ${left[0]}.`
+        : '') +
       (displacedTo
         ? ` The ${displaced.kind} that was there (${displaced.files} file(s), ` +
           `${formatBytes(displaced.bytes)}) was moved to ${displacedTo}, not deleted.`
+        : '') +
+      (ctx.signal?.aborted
+        ? ' The request was cancelled after the move had started, so it was completed rather ' +
+          'than left half-done.'
         : ''),
-    { performed: true, method, displaced_to: displacedTo, ...plan },
+    {
+      performed: true,
+      cancelled_after_start: Boolean(ctx.signal?.aborted),
+      method: outcome.method,
+      source_left_in_place: left,
+      displaced_to: displacedTo,
+      ...plan,
+    },
   )
 }
 
-export async function renameLocal(ctx, args) {
-  const source = await resolveExisting(ctx.roots, args.path, { what: 'path' })
-  const newName = String(args.new_name ?? '').trim()
-
-  if (!newName || newName === '.' || newName === '..') {
+/**
+ * new_name, exactly as given.
+ *
+ * Not trimmed: "b.txt " is a different name from "b.txt", and trimming turned a
+ * rename to the first into a refusal about the second -- or, where no "b.txt"
+ * existed, into a rename nobody asked for. Bounded in bytes, because a name
+ * longer than any filesystem accepts used to come back whole in the error.
+ */
+function requireName(value) {
+  if (typeof value !== 'string' || value === '' || value === '.' || value === '..') {
     throw new ToolError('invalid_name', 'new_name must be a non-empty filename.')
   }
-  if (newName.includes(sep) || newName.includes('/') || newName.includes('\0')) {
+  const bytes = Buffer.byteLength(value, 'utf8')
+  if (bytes > LIMITS.nameBytes) {
     throw new ToolError(
       'invalid_name',
-      `new_name must be a bare filename, not a path; got ${JSON.stringify(newName)}. ` +
+      `new_name is ${bytes.toLocaleString('en-US')} bytes; filesystems accept at most ` +
+        `${LIMITS.nameBytes}. It starts ${quote(value, 60)}.`,
+    )
+  }
+  if (value.includes(sep) || value.includes('/') || value.includes('\0')) {
+    throw new ToolError(
+      'invalid_name',
+      `new_name must be a bare filename, not a path; got ${quote(value)}. ` +
         'Use move_local to change a location.',
     )
   }
+  return value
+}
+
+export async function renameLocal(ctx, args) {
+  const source = await resolveEntry(ctx.roots, args.path, { what: 'path' })
+  const newName = requireName(args.new_name)
 
   const finalPath = join(dirname(source.realPath), newName)
-  await resolveTarget(ctx.roots, finalPath, { what: 'new name' })
+  const final = await resolveDestination(ctx.roots, finalPath, { what: 'new name' })
 
-  if (await exists(finalPath)) {
+  if (final.stats) {
     throw new ToolError(
       'destination_exists',
-      `Refused: ${finalPath} already exists. Rename never replaces another file; ` +
+      `Refused: ${quote(finalPath)} already exists. Rename never replaces another file; ` +
         'move it out of the way first.',
     )
   }
 
-  const plan = { action: 'rename', from: source.realPath, to: finalPath }
+  const plan = { action: 'rename', from: source.realPath, to: finalPath, kind: kindOf(source.stats) }
   if (!args.confirm) {
     return toolResult(
       `Planned (nothing changed): rename ${basename(source.realPath)} → ${newName} ` +
@@ -368,7 +467,11 @@ export async function renameLocal(ctx, args) {
     )
   }
 
-  await rename(source.realPath, finalPath)
+  refuseIfCancelled(ctx)
+
+  // The check above is for the preview. This is what keeps the promise: it
+  // refuses if anything has appeared at the new name since.
+  await renameNoReplace(source.realPath, finalPath, source.stats)
   return toolResult(`Renamed to ${finalPath}.`, { performed: true, ...plan })
 }
 
@@ -376,7 +479,7 @@ export async function createLocalFolder(ctx, args) {
   const dest = await resolveTarget(ctx.roots, args.path, { what: 'folder' })
 
   if (dest.exists) {
-    const st = await stat(dest.realPath)
+    const st = await lstat(dest.realPath)
     if (st.isDirectory()) {
       return toolResult(`${dest.realPath} already exists and is a directory.`, {
         performed: false,
@@ -387,7 +490,7 @@ export async function createLocalFolder(ctx, args) {
     }
     throw new ToolError(
       'destination_exists',
-      `Refused: ${dest.realPath} exists and is not a directory.`,
+      `Refused: ${quote(dest.realPath)} exists and is not a directory.`,
     )
   }
 
@@ -400,12 +503,35 @@ export async function createLocalFolder(ctx, args) {
     )
   }
 
+  refuseIfCancelled(ctx)
   await mkdir(dest.realPath, { recursive: true })
   return toolResult(`Created ${dest.realPath}.`, { performed: true, ...plan })
 }
 
 /**
- * Move items into a trash directory inside their own root.
+ * Refuse a trash call that lists a path inside another path it also lists.
+ *
+ * The preview counted such an item twice, and a confirmed call moved the
+ * folder and then failed on the file that had already gone with it.
+ */
+function refuseOverlaps(entries) {
+  const listed = new Set(entries.map((e) => e.realPath))
+  for (const e of entries) {
+    for (let dir = dirname(e.realPath); isInside(dir, e.root.realPath); dir = dirname(dir)) {
+      if (listed.has(dir)) {
+        throw new ToolError(
+          'overlapping_paths',
+          `Refused before moving anything: ${quote(e.realPath)} is inside ${quote(dir)}, ` +
+            'which is also listed. Trashing a folder takes everything in it; list one or the other.',
+        )
+      }
+      if (dir === e.root.realPath) break
+    }
+  }
+}
+
+/**
+ * Move items into this server's trash.
  *
  * Not a delete. The bytes stay on the same volume, which means this does not
  * free space until the user empties the trash themselves — stated in the
@@ -413,98 +539,192 @@ export async function createLocalFolder(ctx, args) {
  * believe it already has.
  */
 export async function trashLocal(ctx, args) {
-  const inputs = Array.isArray(args.paths) ? args.paths : [args.paths]
-  if (!inputs.length) throw new ToolError('invalid_path', 'At least one path is required.')
+  const inputs = boundedList(args.paths, { name: 'paths', max: LIMITS.paths })
+  const batch = batchName(ctx.now())
 
-  const stamp = trashStamp(ctx.now())
-  const planned = []
-
+  // Every path is resolved before any is planned. A path given twice is taken
+  // once.
+  const entries = []
+  const seen = new Set()
   for (const input of inputs) {
-    const item = await resolveExisting(ctx.roots, input, { what: 'path' })
+    const entry = await resolveEntry(ctx.roots, input, { what: 'path' })
+    if (seen.has(entry.realPath)) continue
+    seen.add(entry.realPath)
+    entries.push(entry)
+  }
+  refuseOverlaps(entries)
 
-    if (item.realPath === item.root.realPath) {
+  const planned = []
+  for (const entry of entries) {
+    if (entry.realPath === entry.root.realPath) {
       throw new ToolError(
         'cannot_trash_root',
-        `Refused: ${item.realPath} is a configured root. Trashing a root would ` +
+        `Refused: ${quote(entry.realPath)} is a configured root. Trashing a root would ` +
           'move the whole allowed tree into a directory inside itself.',
       )
     }
-    if (isInside(item.realPath, join(item.root.realPath, TRASH_DIR_NAME))) {
+    if (inTrash(entry.root.realPath, entry.realPath)) {
       throw new ToolError(
         'already_trashed',
-        `Refused: ${item.realPath} is already in this server's trash.`,
+        `Refused: ${quote(entry.realPath)} is already in this server's trash.`,
       )
     }
-
-    const size = await measure(item.realPath)
+    const base = await trashBaseFor(entry.root.realPath, entry.realPath, entry.stats)
+    await inspectTrashDir(base)
     planned.push({
-      source: item.realPath,
-      root: item.root.realPath,
-      destination: trashDestination(item.root.realPath, item.realPath, stamp),
-      kind: size.kind,
-      files: size.files,
-      bytes: size.bytes,
-      bytes_human: formatBytes(size.bytes),
+      entry,
+      base,
+      destination: trashPaths(base, batch, entry.realPath).destination,
+      size: await measure(entry.realPath),
     })
   }
 
-  const totalBytes = planned.reduce((n, p) => n + p.bytes, 0)
-  const totalFiles = planned.reduce((n, p) => n + p.files, 0)
+  const items = planned.map((p) => ({
+    source: p.entry.realPath,
+    root: p.entry.root.realPath,
+    trash_directory: join(p.base, TRASH_DIR_NAME),
+    destination: p.destination,
+    kind: p.size.kind,
+    files: p.size.files,
+    bytes: p.size.bytes,
+    bytes_human: formatBytes(p.size.bytes),
+  }))
+  const totalBytes = items.reduce((n, i) => n + i.bytes, 0)
+  const totalFiles = items.reduce((n, i) => n + i.files, 0)
+  const repeated = inputs.length - entries.length
+  const places = [...new Set(items.map((i) => i.trash_directory))]
 
   if (!args.confirm) {
     return toolResult(
-      `Planned (nothing changed): move ${planned.length} item(s), ${totalFiles} file(s), ` +
-        `${formatBytes(totalBytes)} into ${TRASH_DIR_NAME}/${stamp}. Nothing is deleted ` +
-        'and no space is freed until you empty that directory yourself. ' +
-        'Call again with confirm: true.',
-      { performed: false, action: 'trash', trash_stamp: stamp, items: planned },
+      `Planned (nothing changed): move ${items.length} item(s), ${totalFiles} file(s), ` +
+        `${formatBytes(totalBytes)} into a new batch in ${places.join(', ')}. Nothing is ` +
+        'deleted and no space is freed until you empty that directory yourself.' +
+        (repeated ? ` ${repeated} repeated path(s) are counted once.` : '') +
+        ' Call again with confirm: true.',
+      {
+        performed: false,
+        action: 'trash',
+        trash_stamp: batch,
+        repeated_paths_ignored: repeated,
+        items,
+        note:
+          'The batch directory is named when the move is performed, so a confirmed ' +
+          'call puts items in a batch with a different name from the one shown here.',
+      },
     )
   }
 
-  // The manifest is written after EACH item, not once at the end. Writing it
-  // only after the loop meant a failure on item 2 left item 1 moved with no
-  // record of where it came from — the one situation the manifest exists for.
+  refuseIfCancelled(ctx)
+
+  // One batch per trash directory, each with a manifest that lists its items
+  // before any of them moves.
+  const batches = new Map()
   const moved = []
-  const manifests = new Set()
-  try {
-    for (const p of planned) {
-      await mkdir(dirname(p.destination), { recursive: true })
-      const method = await relocate(p.source, p.destination)
-      moved.push({ ...p, method })
-      manifests.add(
-        await recordInManifest(
-          p.root,
-          stamp,
-          [{ original_path: p.source, trashed_to: p.destination, bytes: p.bytes }],
-          ctx.now(),
-        ),
-      )
+  let failure = null
+  for (const p of planned) {
+    // Checked between items, never inside one, so a cancelled batch stops with
+    // every item either moved and recorded or untouched.
+    if (ctx.signal?.aborted) {
+      failure = new ToolError('cancelled', 'The request was cancelled.')
+      break
     }
-  } catch (err) {
-    throw new ToolError(
-      'trash_partially_applied',
-      `Stopped after moving ${moved.length} of ${planned.length} item(s): ` +
-        `${err.message}. What was already moved IS recorded in ` +
-        `${[...manifests].join(', ') || 'no manifest (nothing moved)'} and can be ` +
-        'restored from there. Nothing was deleted.',
-      { moved, manifests: [...manifests] },
-    )
+    try {
+      let b = batches.get(p.base)
+      if (!b) {
+        b = await openBatch(p.base, batch)
+        batches.set(p.base, b)
+        b.entries = planned.filter((q) => q.base === p.base).map(manifestEntry)
+        await writeManifest(b, ctx.now())
+      }
+      await makeParents(b, p.destination)
+      await moveIntoTrash(p.entry.realPath, p.destination, p.entry.stats)
+      moved.push(p)
+    } catch (err) {
+      failure = err
+      break
+    }
   }
+
+  if (failure) throw await trashFailure(failure, planned, moved, batches, ctx)
 
   return toolResult(
     `Moved ${moved.length} item(s), ${totalFiles} file(s), ${formatBytes(totalBytes)} into ` +
-      `${TRASH_DIR_NAME}/${stamp}. NOTHING WAS DELETED and no disk space has been ` +
-      'freed — the files are still on the same volume. Delete that directory in ' +
-      'your file manager when you are satisfied. A manifest.json beside them records ' +
-      'where each came from.',
+      `${TRASH_DIR_NAME}/${batch}${places.length > 1 ? ` in ${places.join(', ')}` : ''}. ` +
+      'NOTHING WAS DELETED and no disk space has been freed — the files are still on the ' +
+      'same volume. Delete that directory in your file manager when you are satisfied. A ' +
+      'manifest.json beside them records where each came from.',
     {
       performed: true,
       action: 'trash',
-      trash_stamp: stamp,
+      trash_stamp: batch,
       space_freed_bytes: 0,
       space_recoverable_bytes: totalBytes,
-      manifests: [...manifests],
-      items: moved,
+      repeated_paths_ignored: repeated,
+      manifests: [...batches.values()].map((b) => b.manifest),
+      items: items.map((i) => ({ ...i, trashed_to: i.destination, method: 'rename' })),
     },
+  )
+}
+
+function manifestEntry(p) {
+  return { original_path: p.entry.realPath, trashed_to: p.destination, kind: p.size.kind, bytes: p.size.bytes }
+}
+
+/**
+ * The error for a trash call that stopped partway, after the manifests have
+ * been brought into line with what moved.
+ *
+ * It says what moved and where, and `detail` carries the same as JSON. The old
+ * message could say that a moved item "IS recorded in no manifest (nothing
+ * moved)", and the detail never reached the client.
+ */
+async function trashFailure(failure, planned, moved, batches, ctx) {
+  const stale = []
+  for (const b of batches.values()) {
+    const here = moved.filter((p) => p.base === b.base)
+    try {
+      if (here.length === 0) {
+        await discardBatch(b)
+      } else if (here.length !== b.entries.length) {
+        b.entries = here.map(manifestEntry)
+        await writeManifest(b, ctx.now())
+      }
+    } catch {
+      stale.push(b.manifest)
+    }
+  }
+
+  const manifests = [...batches.values()]
+    .filter((b) => moved.some((p) => p.base === b.base))
+    .map((b) => b.manifest)
+  const detail = {
+    moved: moved.map((p) => ({ original_path: p.entry.realPath, trashed_to: p.destination })),
+    not_moved: planned.filter((p) => !moved.includes(p)).map((p) => p.entry.realPath),
+    manifests,
+  }
+
+  const cancelled = failure instanceof ToolError && failure.code === 'cancelled'
+  if (moved.length === 0) {
+    return new ToolError(
+      failure instanceof ToolError ? failure.code : 'trash_failed',
+      `Nothing was moved to the trash: ${failure.message}`,
+      detail,
+    )
+  }
+
+  const shown = detail.moved.slice(0, 10).map((m) => `${m.original_path} → ${m.trashed_to}`)
+  return new ToolError(
+    cancelled ? 'cancelled_partially_applied' : 'trash_partially_applied',
+    (cancelled
+      ? `Cancelled after moving ${moved.length} of ${planned.length} item(s). `
+      : `Stopped after moving ${moved.length} of ${planned.length} item(s): ${failure.message}. `) +
+      `Moved, and recorded in ${manifests.join(', ')}: ${shown.join('; ')}` +
+      `${moved.length > shown.length ? `; and ${moved.length - shown.length} more` : ''}. ` +
+      (stale.length
+        ? `${stale.join(', ')} could not be brought up to date and also lists items that ` +
+          'were not moved; an entry whose trashed_to does not exist was not moved. '
+        : '') +
+      'Nothing was deleted, and the items that were not moved are where they were.',
+    detail,
   )
 }

@@ -305,7 +305,7 @@ describe('no roots configured', () => {
 })
 
 describe('cross-root isolation', () => {
-  it('will not move between two configured roots', async () => {
+  it('allows a move between two configured roots', async () => {
     // Two roots are two allowed areas, not one merged filesystem. A move
     // between them is still contained, so this documents that it IS allowed.
     const t = await tree({ 'one/a.txt': 'x', 'two/.keep': '' })

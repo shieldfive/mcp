@@ -56,13 +56,16 @@ const DEFAULT_SKIP_DIRS = new Set([
 /**
  * Walk one directory tree, breadth-first.
  *
+ * `maxDepth` counts levels BELOW the start: the start directory is depth 0, so
+ * the default of 64 walks the start and 64 levels of subdirectories beneath it.
+ *
  * Every field of `stats` is read by name elsewhere: scanWarnings() in format.mjs
  * turns the counters into the sentences a user sees, and read.mjs copies a few
  * into its payloads. Adding a field is safe; renaming one silently drops a
  * warning.
  *
  * @returns {Promise<{
- *   files: Array<{path, relativePath, size, mtimeMs, extension, hardlinked}>,
+ *   files: Array<{path, relativePath, size, mtimeMs, extension, hardlinked, dev, ino, nlink}>,
  *   stats: {
  *     directories: number, symlinksSkipped: number, hiddenSkipped: number,
  *     skippedDirectories: string[], hardlinked: string[],
@@ -178,6 +181,12 @@ export async function walk(
           mtimeMs: st.mtimeMs,
           extension: extname(entry.name).toLowerCase(),
           hardlinked: st.nlink > 1,
+          // Recorded so find_duplicates can tell two names of one file from two
+          // copies. Without them a hardlinked pair was reported as a duplicate
+          // whose removal would free space, and it frees none.
+          dev: st.dev,
+          ino: st.ino,
+          nlink: st.nlink,
         })
       }
     } finally {
@@ -193,17 +202,29 @@ export async function walk(
   return { files, stats }
 }
 
-/** Walk every root, tagging each file with the root it came from. */
+/**
+ * Walk every root, tagging each file with the root it came from.
+ *
+ * `notScanned` lists the roots that were never walked because the file budget
+ * ran out first. They used to be walked with a cap of zero and then dropped
+ * from the per-root results, while every tool still listed them as scanned.
+ */
 export async function walkRoots(rootSet, options = {}) {
   const files = []
   const perRoot = []
+  const notScanned = []
   const budget = options.maxFiles ?? 200_000
 
   for (const root of rootSet) {
     // A shared budget, decremented per root. Passing the same maxFiles to each
     // walk made the documented cap a PER-ROOT cap, so N roots returned up to N
     // times the number the caller asked for.
-    const remaining = Math.max(0, budget - files.length)
+    const remaining = budget - files.length
+    if (remaining <= 0 || perRoot.some((r) => r.truncated)) {
+      notScanned.push(root.realPath)
+      continue
+    }
+
     const result = await walk(root.realPath, { ...options, maxFiles: remaining })
 
     for (const f of result.files) {
@@ -215,18 +236,15 @@ export async function walkRoots(rootSet, options = {}) {
       files.push(f)
     }
 
-    const exhausted = remaining === 0 || result.stats.truncated
     perRoot.push({
       root: root.realPath,
       ...result.stats,
-      truncated: exhausted,
       maxFiles: budget,
       files: result.files.length,
     })
-    if (exhausted) break
   }
 
-  return { files, perRoot }
+  return { files, perRoot, notScanned }
 }
 
 /**

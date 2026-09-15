@@ -86,6 +86,23 @@ describe('walk', () => {
     assert.equal(files.length, 0)
     assert.ok(stats.depthLimited.length > 0)
   })
+
+  it('walks the root plus maxDepth levels of subdirectories, and no deeper', async () => {
+    // The README used to say "64 directory levels" for maxDepth 64, which is
+    // the root and 64 levels beneath it. This pins what the number means.
+    const t = await tree({ 'top.txt': 'x', 'a/one.txt': 'x', 'a/b/two.txt': 'x' })
+    const { files, stats } = await walk(t.base, { maxDepth: 1 })
+    assert.deepEqual(files.map((f) => f.relativePath).sort(), ['a/one.txt', 'top.txt'])
+    assert.deepEqual(stats.depthLimited, [t.path('a/b')])
+  })
+
+  it('records the device and inode of every file, so hardlinks can be told apart from copies', async () => {
+    const t = await tree({ 'a.txt': 'x' })
+    const { files } = await walk(t.base)
+    assert.equal(typeof files[0].dev, 'number')
+    assert.equal(typeof files[0].ino, 'number')
+    assert.equal(files[0].nlink, 1)
+  })
 })
 
 describe('hashFile', () => {

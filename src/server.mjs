@@ -21,7 +21,7 @@
 // will not guess either, because matching a filename and a size against a vault
 // listing is how a tool deletes the only copy of something.
 
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -29,7 +29,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
 import { toolFailure } from './format.mjs'
-import { NO_ROOTS_MESSAGE, resolveRoots, rootCandidatesFrom } from './roots.mjs'
+import { LIMITS } from './limits.mjs'
+import { NO_ROOTS_MESSAGE, resolveRoots, rootCandidatesFrom, ToolError } from './roots.mjs'
 import {
   findDuplicates,
   findLargeFiles,
@@ -39,17 +40,21 @@ import {
 } from './tools/read.mjs'
 import { createLocalFolder, moveLocal, renameLocal, trashLocal } from './tools/mutate.mjs'
 
-export const VERSION = '0.1.0'
+// Read from package.json rather than repeated here. A second copy had no test,
+// and the first release that forgot to bump it would have reported the old one.
+export const VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version
 
 /** stdout is the protocol channel. Everything human goes to stderr. */
 const log = (...parts) => process.stderr.write(`[shieldfive-mcp] ${parts.join(' ')}\n`)
 
-// 4096 is PATH_MAX on Linux and far above anything macOS accepts. The cap is
-// not about the filesystem: without it a 5 MB path argument was reflected
+// Every cap here is also applied by the handler; see limits.mjs. The path cap
+// is not about the filesystem: without it a 5 MB path argument was reflected
 // verbatim into the error message and landed 1:1 in the model's context.
 const pathArg = z
   .string()
-  .max(4096, 'path is longer than any filesystem accepts')
+  .max(LIMITS.pathChars, 'path is longer than any filesystem accepts')
   .describe('Absolute path. Must resolve inside a configured root; relative paths are refused.')
 
 const scanArgs = {
@@ -59,9 +64,16 @@ const scanArgs = {
     .number()
     .int()
     .positive()
+    .max(LIMITS.maxFiles)
     .optional()
-    .describe('Stop after this many files. The result says so when the cap is hit.'),
-  limit: z.number().int().positive().optional().describe('Maximum rows to return.'),
+    .describe('Stop after this many files, at most 1,000,000. The result says so when the cap is hit.'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(LIMITS.limit)
+    .optional()
+    .describe('Maximum rows to return, at most 10,000.'),
 }
 
 const TOOLS = [
@@ -94,8 +106,9 @@ const TOOLS = [
         .number()
         .int()
         .positive()
+        .max(LIMITS.maxFilesHashed)
         .optional()
-        .describe('Hashing budget. When reached, the result says it is a lower bound.'),
+        .describe('Hashing budget in reads, at most 1,000,000. When reached, the result says it is a lower bound.'),
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
     handler: findDuplicates,
@@ -139,9 +152,11 @@ const TOOLS = [
     name: 'move_local',
     title: 'Move a file or folder',
     description:
-      'Move a file or directory to another location inside the allowed roots. Without ' +
-      'confirm: true this only reports what it would do. Refuses to overwrite unless ' +
-      'overwrite: true is also passed.',
+      'Move a file, directory or symlink to another location inside the allowed roots. ' +
+      'A symlink is moved itself, never what it points to. Without confirm: true this ' +
+      'only reports what it would do. Refuses to overwrite unless overwrite: true is also ' +
+      'passed, and then moves what was there to the trash. Between volumes the move is a ' +
+      'copy, verified before the source is removed.',
     inputSchema: {
       source: pathArg,
       destination: pathArg.describe(
@@ -157,11 +172,15 @@ const TOOLS = [
     name: 'rename_local',
     title: 'Rename a file or folder',
     description:
-      'Rename an item in place. new_name must be a bare filename, not a path. Never ' +
-      'replaces an existing file. Without confirm: true this only reports the plan.',
+      'Rename an item in place; a symlink is renamed itself. new_name must be a bare ' +
+      'filename, not a path, and is used exactly as given. Never replaces an existing ' +
+      'file. Without confirm: true this only reports the plan.',
     inputSchema: {
       path: pathArg,
-      new_name: z.string().describe('The new filename, with no directory separators.'),
+      new_name: z
+        .string()
+        .max(LIMITS.nameBytes)
+        .describe('The new filename, used exactly as given: no directory separators, at most 255 bytes.'),
       confirm: z.boolean().optional().describe('Required to actually rename.'),
     },
     annotations: {
@@ -195,17 +214,62 @@ const TOOLS = [
     title: 'Move files to this server’s trash',
     description:
       'Move files or folders into a .shieldfive-mcp-trash directory inside their own ' +
-      'root, with a manifest recording where each came from. NOTHING IS DELETED and no ' +
+      'root and on their own volume, with a manifest recording where each came from. A ' +
+      'symlink is trashed itself, never what it points to. NOTHING IS DELETED and no ' +
       'disk space is freed — the bytes stay on the same volume until you empty that ' +
       'directory yourself. Without confirm: true this only reports the plan.',
     inputSchema: {
-      paths: z.array(pathArg).min(1).describe('Absolute paths to move into the trash.'),
+      paths: z
+        .array(pathArg)
+        .min(1)
+        .max(LIMITS.paths)
+        .describe('Absolute paths to move into the trash, at most 1,000.'),
       confirm: z.boolean().optional().describe('Required to actually move anything.'),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     handler: trashLocal,
   },
 ]
+
+/**
+ * Run one tool call and render its result or its refusal.
+ *
+ * extra.signal is aborted when the client cancels the request, and the SDK then
+ * sends no response at all. For a tool that changes files the outcome is
+ * therefore written to the log, the only record left of what a cancelled call
+ * did. Every error raised after a cancellation used to be replaced with
+ * "Cancelled.", including a partial trash carrying its account of what had
+ * already moved; a mutation's own error now passes through intact, detail
+ * included, and only a read-only tool's abort becomes a plain cancellation.
+ */
+export async function runTool(tool, ctx, args, extra, write = log) {
+  const signal = extra?.signal
+  const mutates = tool.annotations?.readOnlyHint === false
+  try {
+    const result = await tool.handler({ ...ctx, signal }, args ?? {})
+    if (mutates && signal?.aborted) {
+      write(
+        `${tool.name}: the request was cancelled after the change had started, and it ` +
+          `completed: ${result?.content?.[0]?.text ?? ''}`,
+      )
+    }
+    return result
+  } catch (err) {
+    if (!mutates && (err?.name === 'AbortError' || signal?.aborted)) {
+      return toolFailure(new ToolError('cancelled', 'Cancelled.'))
+    }
+    if (err?.name !== 'ToolError') {
+      write(`${tool.name} failed:`, err?.stack ?? String(err))
+    }
+    if (mutates && signal?.aborted) {
+      write(
+        `${tool.name}: the request was cancelled; outcome: [${err?.code ?? 'error'}] ` +
+          `${err?.message ?? String(err)}`,
+      )
+    }
+    return toolFailure(err)
+  }
+}
 
 export function createServer(ctx) {
   const server = new McpServer(
@@ -231,22 +295,7 @@ export function createServer(ctx) {
         inputSchema: tool.inputSchema,
         annotations: tool.annotations,
       },
-      async (args, extra) => {
-        try {
-          // extra.signal is aborted when the client cancels the request. It was
-          // previously discarded, so a cancelled scan of a large tree kept
-          // hashing to completion.
-          return await tool.handler({ ...ctx, signal: extra?.signal }, args ?? {})
-        } catch (err) {
-          if (err?.name === 'AbortError' || extra?.signal?.aborted) {
-            return toolFailure(new Error('Cancelled.'))
-          }
-          if (err?.name !== 'ToolError') {
-            log(`${tool.name} failed:`, err?.stack ?? String(err))
-          }
-          return toolFailure(err)
-        }
-      },
+      (args, extra) => runTool(tool, ctx, args, extra),
     )
   }
 
