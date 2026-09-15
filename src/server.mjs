@@ -152,9 +152,11 @@ const TOOLS = [
     name: 'move_local',
     title: 'Move a file or folder',
     description:
-      'Move a file or directory to another location inside the allowed roots. Without ' +
-      'confirm: true this only reports what it would do. Refuses to overwrite unless ' +
-      'overwrite: true is also passed.',
+      'Move a file, directory or symlink to another location inside the allowed roots. ' +
+      'A symlink is moved itself, never what it points to. Without confirm: true this ' +
+      'only reports what it would do. Refuses to overwrite unless overwrite: true is also ' +
+      'passed, and then moves what was there to the trash. Between volumes the move is a ' +
+      'copy, verified before the source is removed.',
     inputSchema: {
       source: pathArg,
       destination: pathArg.describe(
@@ -170,8 +172,9 @@ const TOOLS = [
     name: 'rename_local',
     title: 'Rename a file or folder',
     description:
-      'Rename an item in place. new_name must be a bare filename, not a path. Never ' +
-      'replaces an existing file. Without confirm: true this only reports the plan.',
+      'Rename an item in place; a symlink is renamed itself. new_name must be a bare ' +
+      'filename, not a path, and is used exactly as given. Never replaces an existing ' +
+      'file. Without confirm: true this only reports the plan.',
     inputSchema: {
       path: pathArg,
       new_name: z
@@ -211,7 +214,8 @@ const TOOLS = [
     title: 'Move files to this server’s trash',
     description:
       'Move files or folders into a .shieldfive-mcp-trash directory inside their own ' +
-      'root, with a manifest recording where each came from. NOTHING IS DELETED and no ' +
+      'root and on their own volume, with a manifest recording where each came from. A ' +
+      'symlink is trashed itself, never what it points to. NOTHING IS DELETED and no ' +
       'disk space is freed — the bytes stay on the same volume until you empty that ' +
       'directory yourself. Without confirm: true this only reports the plan.',
     inputSchema: {
