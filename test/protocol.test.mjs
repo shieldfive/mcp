@@ -5,7 +5,7 @@
 // entry point and talks to it with the real client.
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
@@ -104,6 +104,31 @@ describe('MCP protocol', () => {
       arguments: { path: tree.path('vault/brand-new') },
     })
     assert.match(res.content[0].text, /Planned \(nothing changed\)/)
+  })
+
+  it('reports the version in package.json', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+    assert.equal(client.getServerVersion()?.version, pkg.version)
+  })
+
+  it('rejects out-of-range arguments at the schema, before doing any work', async () => {
+    const limit = await client.callTool({ name: 'list_local', arguments: { limit: 10_000_001 } })
+    assert.equal(limit.isError, true, 'limit above its cap must be refused')
+    assert.match(limit.content[0].text, /10000/)
+
+    const paths = await client.callTool({
+      name: 'trash_local',
+      arguments: { paths: Array.from({ length: 1001 }, () => tree.path('vault/a.txt')) },
+    })
+    assert.equal(paths.isError, true, 'more than 1000 paths must be refused')
+    assert.match(paths.content[0].text, /1000/)
+
+    const name = await client.callTool({
+      name: 'rename_local',
+      arguments: { path: tree.path('vault/a.txt'), new_name: 'x'.repeat(5000) },
+    })
+    assert.equal(name.isError, true)
+    assert.ok(name.content[0].text.length < 1000, 'an oversized name must not be echoed back whole')
   })
 
   it('carries instructions telling the model not to claim a backup', async () => {

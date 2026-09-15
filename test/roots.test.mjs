@@ -175,3 +175,29 @@ describe('resolveTarget', () => {
     assert.equal(got.exists, true)
   })
 })
+
+describe('path arguments are used as given', () => {
+  it('does not trim whitespace, so "report " is not "report"', async () => {
+    const t = await tree({ 'in/report': 'plain', 'in/report ': 'trailing space' })
+    const ctx = await makeCtx([t.path('in')])
+    const got = await resolveExisting(ctx.roots, `${t.path('in/report')} `)
+    assert.equal(got.realPath, t.path('in/report '))
+    await assert.rejects(
+      () => resolveExisting(ctx.roots, ` ${t.path('in/report')}`),
+      (e) => e.code === 'invalid_path',
+    )
+  })
+
+  it('bounds how much of an unusable path it echoes back', async () => {
+    const t = await tree({ 'in/.keep': '' })
+    const ctx = await makeCtx([t.path('in')])
+    for (const input of [`relative/${'x'.repeat(20_000)}`, `/${'x'.repeat(20_000)}`]) {
+      const err = await resolveExisting(ctx.roots, input).then(
+        () => null,
+        (e) => e,
+      )
+      assert.ok(err, 'must refuse')
+      assert.ok(err.message.length < 1000, `a refusal of ${err.message.length} characters`)
+    }
+  })
+})

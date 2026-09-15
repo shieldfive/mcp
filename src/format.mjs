@@ -31,6 +31,20 @@ export function formatBytes(bytes) {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${UNITS[unit]}`
 }
 
+/**
+ * A caller-supplied value, quoted for a message and cut to a readable length.
+ *
+ * A refusal that echoes its input whole puts all of it into the model's
+ * context: a 20,000-character path came back as a 20,139-character error, and
+ * nothing capped new_name at all. The schema bounds path arguments, but a
+ * handler can be reached without it, and new_name is not a path.
+ */
+export function quote(value, max = 200) {
+  const text = String(value)
+  if (text.length <= max) return JSON.stringify(text)
+  return `${JSON.stringify(text.slice(0, max))}… (${text.length.toLocaleString('en-US')} characters in all)`
+}
+
 export function formatDate(mtimeMs) {
   return new Date(mtimeMs).toISOString().slice(0, 10)
 }

@@ -17,6 +17,8 @@
 import { realpath, lstat } from 'node:fs/promises'
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path'
 
+import { quote } from './format.mjs'
+
 /** A refusal the model is meant to read and act on, not a crash. */
 export class ToolError extends Error {
   constructor(code, message, detail = undefined) {
@@ -26,6 +28,13 @@ export class ToolError extends Error {
     if (detail !== undefined) this.detail = detail
   }
 }
+
+/**
+ * The longest path argument accepted: PATH_MAX on Linux, and more than macOS
+ * accepts. The cap is not about the filesystem. Without it a 5 MB path argument
+ * was reflected verbatim into the error and into the model's context.
+ */
+export const MAX_PATH_CHARS = 4096
 
 export const NO_ROOTS_MESSAGE =
   'No allowed roots are configured, so this server can read nothing. ' +
@@ -40,6 +49,10 @@ export const NO_ROOTS_MESSAGE =
  * A root that does not exist, or is not a directory, is dropped with a reason
  * rather than silently ignored — a typo in a client config should be visible,
  * not just produce an empty file listing.
+ *
+ * Root candidates are trimmed, unlike tool arguments: they come from a config
+ * file or a shell variable a person typed, where stray whitespace around a
+ * separator is common, and every rejection is logged at startup.
  */
 export async function resolveRoots(candidates) {
   const roots = []
@@ -126,9 +139,9 @@ export async function resolveExisting(rootSet, input, { what = 'path' } = {}) {
     real = await realpath(requested)
   } catch (err) {
     if (err.code === 'ENOENT') {
-      throw new ToolError('not_found', `No such ${what}: ${requested}`)
+      throw new ToolError('not_found', `No such ${what}: ${quote(requested)}`)
     }
-    throw new ToolError('unreadable', `Cannot read ${what} ${requested} (${err.code})`)
+    throw new ToolError('unreadable', `Cannot read ${what} ${quote(requested)} (${err.code})`)
   }
 
   return { realPath: real, root: requireContained(rootSet, real, requested, what) }
@@ -162,11 +175,11 @@ export async function resolveTarget(rootSet, input, { what = 'destination' } = {
       // failure that matters most here, so it passes through untouched.
       if (err instanceof ToolError) throw err
       if (err.code !== 'ENOENT') {
-        throw new ToolError('unreadable', `Cannot resolve ${what} ${requested} (${err.code})`)
+        throw new ToolError('unreadable', `Cannot resolve ${what} ${quote(requested)} (${err.code})`)
       }
       const parent = resolve(probe, '..')
       if (parent === probe) {
-        throw new ToolError('not_found', `No existing ancestor for ${requested}`)
+        throw new ToolError('not_found', `No existing ancestor for ${quote(requested)}`)
       }
       trailing.unshift(probe.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)))
       probe = parent
@@ -180,20 +193,35 @@ function assertRoots(rootSet) {
   }
 }
 
+/**
+ * A path argument, exactly as given.
+ *
+ * Nothing is trimmed. "report " and "report" are different files, and trimming
+ * made a request for the first act on the second.
+ */
 function requireAbsolute(input, what) {
-  if (typeof input !== 'string' || !input.trim()) {
+  if (typeof input !== 'string' || input === '') {
     throw new ToolError('invalid_path', `A ${what} is required.`)
   }
-  const value = input.trim()
-  if (!isAbsolute(value)) {
+  if (input.length > MAX_PATH_CHARS) {
     throw new ToolError(
       'invalid_path',
-      `${what} must be an absolute path; got ${JSON.stringify(value)}. ` +
+      `${what} is ${input.length.toLocaleString('en-US')} characters long, more than any ` +
+        `filesystem accepts. It starts ${quote(input, 80)}.`,
+    )
+  }
+  if (input.includes('\0')) {
+    throw new ToolError('invalid_path', `${what} contains a NUL byte, which no path can: ${quote(input)}.`)
+  }
+  if (!isAbsolute(input)) {
+    throw new ToolError(
+      'invalid_path',
+      `${what} must be an absolute path; got ${quote(input)}. ` +
         'This server resolves nothing against a working directory, because it has ' +
         'no meaningful one.',
     )
   }
-  return resolve(value)
+  return resolve(input)
 }
 
 function requireContained(rootSet, real, requested, what) {
@@ -201,8 +229,8 @@ function requireContained(rootSet, real, requested, what) {
   if (!root) {
     throw new ToolError(
       'outside_roots',
-      `Refused: ${what} ${requested} resolves to ${real}, which is outside every ` +
-        `configured root (${rootSet.map((r) => r.realPath).join(', ')}). ` +
+      `Refused: ${what} ${quote(requested)} resolves to ${quote(real)}, which is outside ` +
+        `every configured root (${rootSet.map((r) => r.realPath).join(', ')}). ` +
         'Add the directory at startup if this is intended; there is no override.',
     )
   }

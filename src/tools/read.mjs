@@ -3,6 +3,7 @@
 import { basename, dirname } from 'node:path'
 
 import { daysAgo, formatBytes, formatDate, scanWarnings, toolResult } from '../format.mjs'
+import { boundedInt, LIMITS } from '../limits.mjs'
 import { isInside, resolveExisting, ToolError } from '../roots.mjs'
 import { hashFile, walkRoots } from '../scan.mjs'
 
@@ -29,12 +30,17 @@ async function targets(ctx, path) {
 function scanOptions(args, ctx) {
   return {
     includeHidden: args.include_hidden ?? false,
-    maxFiles: args.max_files ?? 200_000,
+    maxFiles: boundedInt(args.max_files, { name: 'max_files', max: LIMITS.maxFiles, fallback: 200_000 }),
     // Plumbed so a cancelled request stops the walk. Without it the SDK's abort
     // signal was accepted and dropped, and a cancelled scan of a large tree ran
     // to completion burning CPU nobody was waiting for.
     signal: ctx?.signal,
   }
+}
+
+/** The row limit a listing returns, defaulted and bounded before any work. */
+function rowLimit(args, fallback) {
+  return boundedInt(args.limit, { name: 'limit', max: LIMITS.limit, fallback })
 }
 
 /**
@@ -50,6 +56,7 @@ function coverage(perRoot, notScanned) {
 
 export async function listLocal(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 200)
   const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const sorted = files.sort((a, b) =>
@@ -59,7 +66,6 @@ export async function listLocal(ctx, args) {
         ? b.mtimeMs - a.mtimeMs
         : a.path.localeCompare(b.path),
   )
-  const limit = args.limit ?? 200
   const shown = sorted.slice(0, limit)
   const totalBytes = files.reduce((n, f) => n + f.size, 0)
   const warnings = scanWarnings(perRoot, notScanned)
@@ -87,11 +93,11 @@ export async function listLocal(ctx, args) {
 
 export async function findLargeFiles(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
   const threshold = args.min_bytes ?? 100_000_000
   const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const big = files.filter((f) => f.size >= threshold).sort((a, b) => b.size - a.size)
-  const limit = args.limit ?? 100
   const shown = big.slice(0, limit)
   const warnings = scanWarnings(perRoot, notScanned)
 
@@ -119,13 +125,13 @@ export async function findLargeFiles(ctx, args) {
 
 export async function findOldFiles(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
   const days = args.older_than_days ?? 365
   const now = ctx.now()
   const cutoff = now - days * 86_400_000
   const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const old = files.filter((f) => f.mtimeMs < cutoff).sort((a, b) => a.mtimeMs - b.mtimeMs)
-  const limit = args.limit ?? 100
   const shown = old.slice(0, limit)
   const warnings = scanWarnings(perRoot, notScanned)
   warnings.push(
@@ -161,6 +167,7 @@ export async function findOldFiles(ctx, args) {
 
 export async function storageSummary(ctx, args) {
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 15)
   const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
   const byExtension = new Map()
@@ -220,8 +227,8 @@ export async function storageSummary(ctx, args) {
         directories: r.directories,
         truncated: r.truncated,
       })),
-      largest_by_extension: top(byExtension, args.limit ?? 15),
-      largest_directories: top(byDirectory, args.limit ?? 15),
+      largest_by_extension: top(byExtension, limit),
+      largest_directories: top(byDirectory, limit),
       note:
         'Sizes are what the filesystem reports for file contents. They exclude ' +
         'directory overhead and do not account for filesystem compression, ' +
@@ -291,6 +298,12 @@ function sameFileKey(f) {
 export async function findDuplicates(ctx, args) {
   const HEAD_WINDOW = 65_536
   const roots = await targets(ctx, args.path)
+  const limit = rowLimit(args, 100)
+  const budget = boundedInt(args.max_files_hashed, {
+    name: 'max_files_hashed',
+    max: LIMITS.maxFilesHashed,
+    fallback: 20_000,
+  })
   const minSize = args.min_bytes ?? 1
   const { files, perRoot, notScanned } = await walkRoots(roots, scanOptions(args, ctx))
 
@@ -313,7 +326,6 @@ export async function findDuplicates(ctx, args) {
         b[0].size * (b.length - 1) - a[0].size * (a.length - 1) || b[0].size - a[0].size,
     )
 
-  const budget = args.max_files_hashed ?? 20_000
   let reads = 0
   const shortfall = [] // { size, files, hashed } for every group not hashed whole
   const unreadable = []
@@ -468,7 +480,6 @@ export async function findDuplicates(ctx, args) {
     warnings.push('min_bytes: 0 was given, so empty files are included; every empty file matches every other.')
   }
 
-  const limit = args.limit ?? 100
   return toolResult(
     `${duplicates.length} duplicate group(s), ${formatBytes(reclaimable)} reclaimable ` +
       'by keeping one copy of each. Every match is confirmed by a full SHA-256 of the ' +

@@ -22,7 +22,8 @@
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 
-import { formatBytes, toolResult } from '../format.mjs'
+import { formatBytes, quote, toolResult } from '../format.mjs'
+import { boundedList, LIMITS } from '../limits.mjs'
 import { isInside, resolveExisting, resolveTarget, ToolError } from '../roots.mjs'
 import { TRASH_DIR_NAME } from '../scan.mjs'
 
@@ -333,20 +334,39 @@ export async function moveLocal(ctx, args) {
   )
 }
 
-export async function renameLocal(ctx, args) {
-  const source = await resolveExisting(ctx.roots, args.path, { what: 'path' })
-  const newName = String(args.new_name ?? '').trim()
-
-  if (!newName || newName === '.' || newName === '..') {
+/**
+ * new_name, exactly as given.
+ *
+ * Not trimmed: "b.txt " is a different name from "b.txt", and trimming turned a
+ * rename to the first into a refusal about the second -- or, where no "b.txt"
+ * existed, into a rename nobody asked for. Bounded in bytes, because a name
+ * longer than any filesystem accepts used to come back whole in the error.
+ */
+function requireName(value) {
+  if (typeof value !== 'string' || value === '' || value === '.' || value === '..') {
     throw new ToolError('invalid_name', 'new_name must be a non-empty filename.')
   }
-  if (newName.includes(sep) || newName.includes('/') || newName.includes('\0')) {
+  const bytes = Buffer.byteLength(value, 'utf8')
+  if (bytes > LIMITS.nameBytes) {
     throw new ToolError(
       'invalid_name',
-      `new_name must be a bare filename, not a path; got ${JSON.stringify(newName)}. ` +
+      `new_name is ${bytes.toLocaleString('en-US')} bytes; filesystems accept at most ` +
+        `${LIMITS.nameBytes}. It starts ${quote(value, 60)}.`,
+    )
+  }
+  if (value.includes(sep) || value.includes('/') || value.includes('\0')) {
+    throw new ToolError(
+      'invalid_name',
+      `new_name must be a bare filename, not a path; got ${quote(value)}. ` +
         'Use move_local to change a location.',
     )
   }
+  return value
+}
+
+export async function renameLocal(ctx, args) {
+  const source = await resolveExisting(ctx.roots, args.path, { what: 'path' })
+  const newName = requireName(args.new_name)
 
   const finalPath = join(dirname(source.realPath), newName)
   await resolveTarget(ctx.roots, finalPath, { what: 'new name' })
@@ -413,8 +433,7 @@ export async function createLocalFolder(ctx, args) {
  * believe it already has.
  */
 export async function trashLocal(ctx, args) {
-  const inputs = Array.isArray(args.paths) ? args.paths : [args.paths]
-  if (!inputs.length) throw new ToolError('invalid_path', 'At least one path is required.')
+  const inputs = boundedList(args.paths, { name: 'paths', max: LIMITS.paths })
 
   const stamp = trashStamp(ctx.now())
   const planned = []

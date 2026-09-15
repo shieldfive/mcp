@@ -225,6 +225,14 @@ describe('the README does not drift from the code', () => {
 })
 
 describe('release hygiene', () => {
+  it('takes the server version from package.json rather than keeping a second copy', async () => {
+    const server = executable(await readFile(join(SRC, 'server.mjs'), 'utf8'))
+    assert.doesNotMatch(server, /VERSION\s*=\s*['"`]\d/, 'a hardcoded version drifts from package.json')
+    const { VERSION } = await import('../src/server.mjs')
+    const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
+    assert.equal(VERSION, pkg.version)
+  })
+
   it('keeps no scratch scripts in the repository root', async () => {
     const stray = (await readdir(ROOT)).filter((name) => /\.(c|m)?js$/.test(name))
     assert.deepEqual(stray, [], 'scripts at the root of a public repository read as part of it')
