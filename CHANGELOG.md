@@ -5,6 +5,109 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+Fixes from a second review before the first publish. Each item has a test that
+failed before its fix.
+
+### Security
+
+- The trash directory was never resolved or `lstat`'d. With
+  `<root>/.shieldfive-mcp-trash` a symlink out of the root, `trash_local` and an
+  overwriting `move_local` moved the user's files and the manifest out of the
+  root. The directory is now checked while planning, created without following
+  links and checked again before anything moves in; a link or a non-directory
+  there is refused (`trash_unsafe`).
+- A dangling symlink read as a free path. A move onto one previewed
+  `replaces_existing: false`; on the same device the link was replaced with no
+  trash entry, and across devices the copy wrote through it, outside the root,
+  before removing the source. At a destination it is now an existing entry, and
+  anywhere a write would pass through it the write is refused
+  (`dangling_symlink`).
+- The cross-device move fallback deleted data. It `rm -rf`'d whatever was at
+  `<destination>.shieldfive-mcp-incoming`, dropped FIFOs, sockets and device
+  files and then removed the source tree, and removed a file's source without
+  flushing or checking the copy. A cross-device move now copies under a fresh,
+  exclusively created name, refuses symlinks and special files in the tree
+  (`symlink_in_tree`, `special_file_in_tree`), flushes and verifies every file by
+  size and SHA-256 against a source that has not changed
+  (`copy_verification_failed`, `source_changed`), and removes the source entry by
+  entry, only what is unchanged since it was copied (`source_left_in_place`).
+- The trash lived per root rather than per volume, so for a root such as
+  `/Volumes`, trashing from an external drive copied the tree onto the boot
+  volume. An item's trash is now on its own volume, in the highest directory
+  between it and its root on that device; a move into the trash is always a
+  rename; a mount point cannot be trashed (`trash_no_same_volume`).
+- `trash_local` on a symlink trashed the tree it pointed to, and `rename_local`
+  renamed the file behind a link. `move_local`, `rename_local` and `trash_local`
+  now act on a link itself, never on its target.
+- `rename_local`'s "never replaces" was a check followed by `rename(2)`. Renames
+  and moves now use operations that fail when the destination exists: a hard link
+  then an unlink for files, a recreated symlink, a rename over an empty
+  placeholder for directories. Special files, filesystems without hard links and
+  directories on Windows still fall back to checking and then renaming;
+  SECURITY.md records the window that leaves.
+
+### Fixed
+
+- `find_duplicates` spent its hashing budget all-or-nothing per size group, so
+  the most valuable group was skipped when its worst case did not fit and the
+  smaller groups behind it were hashed instead. The budget is now spent per file,
+  largest group first, hashing a group in part when it must
+  (`groups_partially_hashed`, `files_not_hashed`).
+- The copy nominated to keep was chosen by modification time, with ties left to
+  directory order. A tie now goes to the shorter path, then to the path in
+  code-unit order (`compareKeeper`).
+- Hardlinks counted as reclaimable space. Names of one file are now one copy,
+  listed under `hardlinked_names`, and `reclaimable_bytes` counts files on disk.
+- A trash batch that failed after moving something could report the moved item
+  as recorded "in no manifest (nothing moved)", and the structured detail never
+  reached the client. The error now names each moved item and its manifest, and
+  the detail is returned as a second content block.
+- Manifest updates raced: concurrent calls in the same millisecond shared a batch
+  and lost entries, and a corrupt manifest was silently reset. Each call now has
+  its own exclusively created batch directory; its manifest is written before
+  anything moves, atomically and one write at a time, and no manifest this
+  server did not write is read or replaced.
+- Path arguments and `new_name` were trimmed, so `"report "` acted on
+  `"report"`. They are used exactly as given.
+- `limit`, `max_files`, `max_files_hashed`, `paths` and `new_name` had no upper
+  bound, and a refusal echoed its input whole. They are capped — 10,000 rows;
+  1,000,000 files; 1,000,000 hash reads; 1,000 paths; 255 bytes — at the MCP
+  schema and again in the handlers, and echoed values are cut short.
+- `trash_local` counted a path given twice twice, and given a folder and
+  something inside it, moved the folder and then failed on the file. A repeated
+  path is taken once and an overlap is refused before anything moves
+  (`overlapping_paths`).
+- The mutating tools ignored cancellation. Nothing starts once a request is
+  cancelled (`cancelled`); a trash batch stops between items
+  (`cancelled_partially_applied`); a move is rolled back until its source starts
+  being removed. The SDK sends no response to a cancelled request, so the server
+  logs what happened.
+- `scanned` listed roots the file budget never reached. Payloads carry
+  `scanned` and `not_scanned`, and the warning names the roots never reached.
+
+### Changed
+
+- A symlink given as the destination of `move_local` is an entry that
+  `overwrite` can replace, not a directory to move into. Give the real path of a
+  directory to move into it.
+- The server version is read from `package.json` rather than kept as a second
+  copy.
+- The README said scans stop at "64 directory levels"; they walk the root and
+  64 levels of subdirectories below it.
+- Removed a scratch script committed at the repository root, a `.npmrc` and
+  `.gitignore` entries left over from other projects, and renamed a test whose
+  name contradicted its assertion.
+
+### Not covered
+
+- A confirmed call is not bound to the preview the user approved: `confirm:
+  true` plans again from scratch. A token over the paths and their modification
+  times is the next design step.
+- The cross-device tests need a RAM disk and run only on macOS; elsewhere they
+  are skipped, visibly. Windows remains untested.
+
 ## 0.1.0 - 2026-09-14
 
 Initial release.

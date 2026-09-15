@@ -48,6 +48,9 @@ macOS and Linux, `;` on Windows):
 SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp
 ```
 
+Whitespace around a root is ignored. In a path given to a tool it is not: there,
+every character is part of the path.
+
 ## What this cannot do
 
 **It cannot see your ShieldFive vault.** Not the file list, not the names, not
@@ -90,22 +93,27 @@ nominated to keep is the one modified earliest; a tie goes to the shorter path,
 then to the path in code-unit order, so the same tree always nominates the same
 copy.
 
-**It deletes nothing.** `trash_local` *moves* files into a
-`.shieldfive-mcp-trash` directory inside the root they came from, and writes a
-`manifest.json` recording where each one was. **No disk space is freed** until
-you delete that directory yourself, in your own file manager, with your own
-undo. The tool says so in its own output so the assistant cannot report the
-space as reclaimed.
+**It deletes nothing of yours, with one exception.** `trash_local` *moves* files
+into a `.shieldfive-mcp-trash` directory on the same volume they are on, and
+writes a `manifest.json` recording where each one was. **No disk space is freed**
+until you delete that directory yourself, in your own file manager, with your
+own undo. The tool says so in its own output so the assistant cannot report the
+space as reclaimed. The exception is a `move_local` between volumes, which has
+to copy: its source is removed, but only after the copy has been verified — see
+[Moving across volumes](#moving-across-volumes).
 
 That holds for overwriting too. `move_local` with `overwrite: true` moves the
 item already at the destination into the trash and then takes its place; it does
 not remove it. The preview tells you how many files and how many bytes would be
-displaced, not just how many are being moved.
+displaced, not just how many are being moved. If the move then fails, the
+displaced item is put back.
 
 **Every tool that changes anything does nothing by default.** Call it without
 `confirm: true` and it resolves the paths, checks containment, reports exactly
-what it would do, and stops. The preview runs the same code as the action, so a
-plan that reports a refusal is a refusal.
+what it would do, and stops. The preview runs the same checks as the action, so
+a plan that reports a refusal is a refusal. The confirmed call plans again
+rather than replaying the preview, so if files change in between, what it does
+can differ from what the preview showed; see [Limits](#limits).
 
 ## Tools
 
@@ -116,10 +124,10 @@ plan that reports a refusal is a refusal.
 | `find_large_files` | sizes | — |
 | `find_old_files` | modification times | — |
 | `storage_summary` | sizes, by extension and directory | — |
-| `move_local` | sizes of both the source and anything it would displace | moves a file or folder; moves a displaced destination to the trash |
-| `rename_local` | — | renames in place |
+| `move_local` | sizes of both the source and anything it would displace | moves a file, folder or symlink; moves a displaced destination to the trash; between volumes, copies, verifies, then removes the source |
+| `rename_local` | — | renames in place, never over an existing name |
 | `create_local_folder` | — | creates a directory |
-| `trash_local` | sizes of the subtree being trashed | moves into the trash directory, writes a manifest |
+| `trash_local` | sizes of the subtree being trashed | moves into the trash directory on the item's own volume, writes a manifest |
 
 Defaults, all overridable per call: `list_local` returns 200 rows, the other
 listings 100. `find_large_files` starts at `min_bytes` 100,000,000 (100 MB).
@@ -129,6 +137,12 @@ listings 100. `find_large_files` starts at `min_bytes` 100,000,000 (100 MB).
 top 15 extensions and top 15 directories. Every scan stops at `max_files`
 200,000 files across all roots, and walks the root and 64 levels of
 subdirectories below it.
+
+Every override has a ceiling, enforced by the MCP schema and again by the tool
+itself: `limit` 10,000 rows, `max_files` 1,000,000, `max_files_hashed`
+1,000,000, `paths` 1,000 per `trash_local` call, 4,096 characters for a path and
+255 bytes for `new_name`. A refusal quotes only the start of a value that was
+too long.
 
 `find_old_files` reports modification time, which is a weak signal: some copy
 operations reset it to the copy date, and an untouched file is not an unwanted
@@ -154,19 +168,66 @@ looks too small says why. It still means `storage_summary` is not a disk-usage
 tool: point it at a developer's home directory and it will tell you so, but it
 will not tell you where the space went.
 
+When the `max_files` budget runs out before every root has been walked, the
+result lists the roots it walked under `scanned` and the others under
+`not_scanned`, and its warning names them.
+
 ### Emptying the trash
 
-This server does not, and cannot. `trash_local` moves files into
-`<root>/.shieldfive-mcp-trash/<timestamp>/` and writes a `manifest.json` beside
-them; removing them for real is a `rm -rf` you run yourself, once you have
-looked at what is in there. Nothing here frees disk space on its own.
+This server does not, and cannot. `trash_local` moves each item into
+`.shieldfive-mcp-trash/<batch>/` in the highest directory, between the item and
+its root, that is on the item's own volume: the root itself, unless the item is
+on a drive mounted inside the root, and then that drive's top directory.
+`<batch>` is a timestamp, a process id and a counter, so no two calls share one.
+The `manifest.json` beside the items is written before any of them moves and
+lists where each came from; an entry whose `trashed_to` does not exist was
+planned but not moved. Removing them for real is a `rm -rf` you run yourself,
+once you have looked at what is in there. Nothing here frees disk space on its
+own.
+
+A mount point cannot be trashed, because no directory on its own volume inside
+the root can hold it. If `.shieldfive-mcp-trash` is a symlink or a file,
+`trash_local` and an overwriting `move_local` refuse rather than follow it.
+
+### Moving across volumes
+
+`rename(2)` cannot cross volumes, so a move between them is a copy followed by
+removing the source — the one place this server removes something you made. It
+is done so that a failure at any point loses nothing:
+
+- The copy is made under a fresh hidden name beside the destination
+  (`.shieldfive-mcp-incoming-<pid>-<n>`), created exclusively, and put in place
+  without replacing anything. Nothing that was already there is touched.
+- A folder holding a symlink, a FIFO, a socket or a device file is refused
+  before any of it is removed, because a copy cannot carry those faithfully.
+- Every file is flushed to disk and compared with its source — same size, same
+  SHA-256 — and the source must not have changed since it was copied. If either
+  check fails, the copy is discarded and the source stays.
+- The source is removed file by file, each only if it is still the file that was
+  copied, and folders only once they are empty. Anything that changed or
+  appeared during the move is left where it is and listed in
+  `source_left_in_place`.
+
+A crash in the middle can leave a partial copy under that hidden name. The
+source is intact until its copy is in place.
+
+### Cancellation
+
+A cancelled request starts no change. `trash_local` stops between items, never
+inside one, so each item is either moved and recorded or untouched, and the
+error says which. A `move_local` cancelled before its source starts being
+removed is undone, including putting back anything it displaced; after that
+point it finishes, because stopping would leave half a tree on each side. The
+MCP SDK sends no response to a cancelled request, so what a cancelled call did
+is written to the server's stderr log and, for the trash, to the manifest.
 
 ## How containment works
 
-Every path an assistant supplies is resolved with `realpath` — following every
-symlink — before anything touches it, and the result must sit inside a
-configured root. A separator-aware boundary check means `/data/roots-evil` does
-not match the root `/data/root`.
+Every path an assistant supplies is used exactly as given, so `"report "` is
+never `"report"`, and resolved with `realpath` — following every symlink — before
+anything reads it or writes through it. The result must sit inside a configured
+root. A separator-aware boundary check means `/data/roots-evil` does not match
+the root `/data/root`.
 
 That ordering is the point. A string check on the supplied path is defeated by
 `..`; a check after `path.resolve` is still defeated by a symlink, because
@@ -177,18 +238,50 @@ containment never got to see.
 
 Destinations that do not exist yet — a move target, a new folder — are checked
 by resolving the nearest existing ancestor and re-appending the rest, so writing
-through a symlinked parent is caught before the write rather than after it.
+through a symlinked parent is caught before the write rather than after it. A
+symlink whose target does not exist is refused wherever a write would pass
+through it: `realpath` reports it exactly like a missing path, and taking that
+at its word would let a copy land wherever the link points.
+
+The one thing not followed is the item a mutating tool acts on. A symlink given
+to `move_local`, `rename_local` or `trash_local` is moved, renamed or trashed
+itself, the way `mv` treats it, and what it points to is not touched; only the
+link's own position has to be inside a root. The same goes for the destination
+of a move: a symlink there, dangling or not, is an existing entry that
+`overwrite: true` would move to the trash, not a folder to move into. Give the
+folder's real path for that.
+
+`rename_local` and `move_local` do not replace something that appears at the
+destination after they have checked it. A file is hard-linked to its new name
+and only then unlinked from the old one, a symlink is recreated, and a folder is
+renamed over an empty placeholder made a moment before, so something appearing
+in between makes the operation fail rather than be overwritten. Where there is
+no such operation — FIFOs, sockets and device files, filesystems without hard
+links such as FAT and exFAT, and folders on Windows — the tool checks and then
+renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
 `npm test` runs 142 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
-  side.
+  side, and so is a dangling symlink on a write path.
+- A `.shieldfive-mcp-trash` that is a symlink out of the root is refused, and
+  nothing is written through it.
 - Two files with the same name and the same size but different contents are
-  **not** reported as duplicates.
-- `trash_local` leaves the bytes readable at their new location and reports
-  `space_freed_bytes: 0`.
+  **not** reported as duplicates, and two names for one file are not counted as
+  space to reclaim.
+- `trash_local` leaves the bytes readable at their new location, on the same
+  volume, and reports `space_freed_bytes: 0`.
+- On a RAM disk mounted inside a root, a move across volumes keeps a source
+  whose copy arrives corrupt or that changes while it is copied, leaves an
+  existing file at its old staging name alone, refuses a folder holding a FIFO,
+  and never writes through a dangling symlink. These run on macOS and are
+  skipped elsewhere.
+- A file that appears at the new name between the check and the rename is not
+  replaced.
+- A cancelled request moves nothing, and a trash batch cancelled midway says
+  exactly what it moved.
 - No file under `src/` imports a networking module, calls `fetch`, spawns a
   subprocess, or reads any environment variable other than
   `SHIELDFIVE_MCP_ROOTS`.
@@ -204,19 +297,31 @@ imports the stdio transport and no HTTP one, which is also asserted.
 
 ## Limits
 
+- **A confirmed call is not bound to its preview.** `confirm: true` plans the
+  operation again from scratch. If files changed after the preview, the action
+  follows the new state rather than the plan you approved. Tying the two
+  together — a token over the paths and their modification times — is the next
+  design step; it is not built.
 - **Sizes are file-content sizes.** They exclude directory overhead and ignore
-  filesystem compression, sparse files and APFS clones, so totals will not match
-  a disk utility exactly.
-- **Scans are capped** by default at 200,000 files, and at the root and 64 levels of subdirectories below it. When
-  a cap is hit the result says so, in the summary line as well as in a field:
-  a scan that stopped at a cap otherwise reads exactly like one that finished,
-  and the assistant reports a partial list as the whole of it.
+  filesystem compression, sparse files, hardlinks and APFS clones, so totals will
+  not match a disk utility exactly; `storage_summary` counts every name of a
+  hardlinked file.
+- **APFS clones look like copies.** `find_duplicates` reports them as
+  reclaimable, and trashing one frees little or nothing.
+- **Scans are capped** by default at 200,000 files, and at the
+  root and 64 levels of subdirectories below it. When a cap is hit the result
+  says so, in the summary line as well as in a field: a scan that stopped at a
+  cap otherwise reads exactly like one that finished, and the assistant reports
+  a partial list as the whole of it.
+- **Cross-volume behaviour is tested on macOS only,** against a RAM disk the
+  tests mount inside their own temporary directory.
 - **Windows is untested.** The code uses no POSIX-only API, and path handling
   goes through `node:path`, but nobody has run it there.
 
-[SECURITY.md](SECURITY.md) carries the rest: time-of-check/time-of-use,
-hardlinks, what inheriting the environment does and does not mean, and what the
-no-network assertion covers.
+[SECURITY.md](SECURITY.md) carries the rest: time-of-check/time-of-use, the
+windows in which a rename can still replace something, hardlinks, what
+inheriting the environment does and does not mean, and what the no-network
+assertion covers.
 
 ## Security
 
