@@ -82,11 +82,13 @@ has.
 
 ## Known limits
 
-- **A confirmed call is not bound to its preview.** `confirm: true` plans the
-  operation again from scratch and acts on that plan. Nothing ties it to the
-  preview the user approved, so if the tree changed between the two calls, what
-  is done can differ from what was shown. Binding them with a token over the
-  paths and their modification times is the next design step; it is not built.
+- **A plan binds what it named, not everything it implies.** `confirm: true`
+  requires the `plan_token` its own preview issued, and refuses when the tree no
+  longer matches what that preview described — the paths, what each entry is
+  (device, inode, size, modification time), and the file and byte counts beneath
+  a directory. A file edited in place to exactly the same length within the same
+  timestamp resolution is not detected. The token is single use and expires
+  after ten minutes.
 - **Time-of-check to time-of-use.** Containment resolves a path and then acts on
   it. An attacker who can replace a directory with a symlink between those two
   steps defeats it. The window is kept narrow — a destination is re-resolved

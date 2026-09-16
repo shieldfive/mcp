@@ -11,7 +11,7 @@ import { after, describe, it } from 'node:test'
 import { join } from 'node:path'
 
 import { moveLocal, renameLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree, payload, withPatchedFs } from './helpers.mjs'
+import { apply, makeCtx, makeTree, payload, withPatchedFs } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -47,7 +47,7 @@ describe('a dangling symlink is an existing entry, not a free path', () => {
     assert.equal(preview.replaces_existing, true)
     assert.equal(preview.displaced.kind, 'symlink')
 
-    await assert.rejects(() => moveLocal(ctx, { ...args, confirm: true }), (e) => e.code === 'destination_exists')
+    await assert.rejects(() => apply(moveLocal, ctx, { ...args}), (e) => e.code === 'destination_exists')
     assert.equal((await lstat(t.path('in/dest/report.txt'))).isSymbolicLink(), true, 'the link must survive')
     assert.equal(await readFile(t.path('in/report.txt'), 'utf8'), 'mine')
     assert.equal(await absent(t.path('out/planted.txt')), true)
@@ -59,7 +59,7 @@ describe('mutating tools act on a symlink itself, never its target', () => {
     const t = await tree({ 'in/photos/a.jpg': 'A', 'in/shortcut': { symlinkTo: 'in/photos' } })
     const ctx = await makeCtx([t.path('in')])
 
-    const data = payload(await trashLocal(ctx, { paths: [t.path('in/shortcut')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [t.path('in/shortcut')]}))
 
     assert.equal(data.items[0].kind, 'symlink')
     assert.equal(await readFile(t.path('in/photos/a.jpg'), 'utf8'), 'A')
@@ -71,7 +71,7 @@ describe('mutating tools act on a symlink itself, never its target', () => {
     const t = await tree({ 'in/real.txt': 'R', 'in/link': { symlinkTo: 'in/real.txt' } })
     const ctx = await makeCtx([t.path('in')])
 
-    await renameLocal(ctx, { path: t.path('in/link'), new_name: 'renamed-link', confirm: true })
+    await apply(renameLocal, ctx, { path: t.path('in/link'), new_name: 'renamed-link'})
 
     assert.equal((await lstat(t.path('in/renamed-link'))).isSymbolicLink(), true)
     assert.equal(await readFile(t.path('in/real.txt'), 'utf8'), 'R')
@@ -81,7 +81,7 @@ describe('mutating tools act on a symlink itself, never its target', () => {
     const t = await tree({ 'in/real.txt': 'R', 'in/link': { symlinkTo: 'in/real.txt' }, 'in/dest/.keep': '' })
     const ctx = await makeCtx([t.path('in')])
 
-    await moveLocal(ctx, { source: t.path('in/link'), destination: t.path('in/dest'), confirm: true })
+    await apply(moveLocal, ctx, { source: t.path('in/link'), destination: t.path('in/dest')})
 
     assert.equal((await lstat(t.path('in/dest/link'))).isSymbolicLink(), true)
     assert.equal(await readFile(t.path('in/real.txt'), 'utf8'), 'R')
@@ -103,7 +103,7 @@ describe('rename_local never replaces, even under a race', () => {
 
     await withPatchedFs({ rename: intrude, link: intrude }, () =>
       assert.rejects(
-        () => renameLocal(ctx, { path: t.path('in/a.txt'), new_name: 'b.txt', confirm: true }),
+        () => apply(renameLocal, ctx, { path: t.path('in/a.txt'), new_name: 'b.txt'}),
         (e) => e.code === 'destination_exists',
       ),
     )
@@ -127,7 +127,7 @@ describe('rename_local never replaces, even under a race', () => {
 
     await withPatchedFs({ rename: intrude }, () =>
       assert.rejects(
-        () => renameLocal(ctx, { path: t.path('in/album'), new_name: 'album-2', confirm: true }),
+        () => apply(renameLocal, ctx, { path: t.path('in/album'), new_name: 'album-2'}),
         (e) => e.code === 'destination_exists',
       ),
     )

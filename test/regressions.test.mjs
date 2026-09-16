@@ -12,7 +12,7 @@ import { formatBytes } from '../src/format.mjs'
 import { TRASH_DIR_NAME, walk, walkRoots } from '../src/scan.mjs'
 import { findDuplicates, findOldFiles, listLocal, storageSummary } from '../src/tools/read.mjs'
 import { moveLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree, payload, summary } from './helpers.mjs'
+import { apply, makeCtx, makeTree, payload, summary } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -45,11 +45,10 @@ describe('move_local must never delete', () => {
     })
     const ctx = await makeCtx([t.path('in')])
 
-    const res = await moveLocal(ctx, {
+    const res = await apply(moveLocal, ctx, {
       source: t.path('in/src'),
       destination: t.path('in/dest'),
-      overwrite: true,
-      confirm: true,
+      overwrite: true
     })
     const data = payload(res)
 
@@ -99,11 +98,10 @@ describe('move_local must never delete', () => {
 
     await assert.rejects(
       () =>
-        moveLocal(ctx, {
+        apply(moveLocal, ctx, {
           source: t.path('in/sub'),
           destination: t.path('in'),
-          overwrite: true,
-          confirm: true,
+          overwrite: true
         }),
       (e) => e.code === 'destination_is_source',
     )
@@ -305,9 +303,8 @@ describe('trash_local robustness', () => {
     try {
       let err
       try {
-        await trashLocal(ctx, {
-          paths: [t.path('in/keep/a.txt'), t.path('in/locked/b.txt')],
-          confirm: true,
+        await apply(trashLocal, ctx, {
+          paths: [t.path('in/keep/a.txt'), t.path('in/locked/b.txt')]
         })
       } catch (e) {
         err = e
@@ -332,7 +329,7 @@ describe('trash_local robustness', () => {
     const root = t.path(`${TRASH_DIR_NAME}/vault`)
     const ctx = await makeCtx([root])
 
-    const data = payload(await trashLocal(ctx, { paths: [join(root, 'file.txt')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [join(root, 'file.txt')]}))
     for (const m of data.manifests) {
       assert.ok(m.startsWith(root + '/'), `manifest ${m} escaped the root ${root}`)
     }
@@ -357,11 +354,10 @@ describe('an overwriting move must not disturb both sides when it fails', () => 
 
     await assert.rejects(
       () =>
-        moveLocal(ctx, {
+        apply(moveLocal, ctx, {
           source: t.path('in/payload'),
           destination: t.path('in/dest'),
-          overwrite: true,
-          confirm: true,
+          overwrite: true
         }),
       (e) => e.code === 'symlink_in_tree',
     )
@@ -376,10 +372,9 @@ describe('an overwriting move must not disturb both sides when it fails', () => 
   it('leaves no staging directory behind on a successful move', async () => {
     const t = await tree({ 'in/src/a.txt': 'a', 'in/dest/.keep': '' })
     const ctx = await makeCtx([t.path('in')])
-    await moveLocal(ctx, {
+    await apply(moveLocal, ctx, {
       source: t.path('in/src'),
-      destination: t.path('in/dest'),
-      confirm: true,
+      destination: t.path('in/dest')
     })
     assert.equal(await gone(t.path('in/dest/src.shieldfive-mcp-incoming')), true)
     assert.equal(await readFile(t.path('in/dest/src/a.txt'), 'utf8'), 'a')
@@ -418,10 +413,9 @@ describe('an overwriting move must not disturb both sides when it fails', () => 
       const dstDev = (await stat(join(other, 'dst'))).dev
       assert.notEqual(srcDev, dstDev, 'the two roots must really be on different devices')
 
-      const res = await moveLocal(ctx, {
+      const res = await apply(moveLocal, ctx, {
         source: t.path('in/tree'),
-        destination: join(other, 'dst'),
-        confirm: true,
+        destination: join(other, 'dst')
       })
       assert.equal(payload(res).method, 'copy+remove')
       assert.equal(await readFile(join(other, 'dst/tree/a.txt'), 'utf8'), 'a')

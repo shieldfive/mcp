@@ -14,7 +14,7 @@ import { after, describe, it } from 'node:test'
 
 import { ToolError } from '../src/roots.mjs'
 import { createLocalFolder, moveLocal, renameLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree } from './helpers.mjs'
+import { apply, makeCtx, makeTree } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -47,15 +47,15 @@ describe('cancellation', () => {
     const cancelled = (e) => e.code === 'cancelled'
 
     await assert.rejects(
-      () => moveLocal(ctx, { source: t.path('in/a.txt'), destination: t.path('in/dest'), confirm: true }),
+      () => apply(moveLocal, ctx, { source: t.path('in/a.txt'), destination: t.path('in/dest')}),
       cancelled,
     )
     await assert.rejects(
-      () => renameLocal(ctx, { path: t.path('in/a.txt'), new_name: 'renamed.txt', confirm: true }),
+      () => apply(renameLocal, ctx, { path: t.path('in/a.txt'), new_name: 'renamed.txt'}),
       cancelled,
     )
-    await assert.rejects(() => createLocalFolder(ctx, { path: t.path('in/new-folder'), confirm: true }), cancelled)
-    await assert.rejects(() => trashLocal(ctx, { paths: [t.path('in/b.txt')], confirm: true }), cancelled)
+    await assert.rejects(() => apply(createLocalFolder, ctx, { path: t.path('in/new-folder')}), cancelled)
+    await assert.rejects(() => apply(trashLocal, ctx, { paths: [t.path('in/b.txt')]}), cancelled)
 
     assert.equal(await readFile(t.path('in/a.txt'), 'utf8'), 'a')
     assert.equal(await readFile(t.path('in/b.txt'), 'utf8'), 'b')
@@ -79,9 +79,8 @@ describe('cancellation', () => {
     }
     const ctx = { ...(await makeCtx([t.path('in')])), signal }
 
-    const err = await trashLocal(ctx, {
-      paths: [first, t.path('in/b.txt'), t.path('in/c.txt')],
-      confirm: true,
+    const err = await apply(trashLocal, ctx, {
+      paths: [first, t.path('in/b.txt'), t.path('in/c.txt')]
     }).then(
       () => null,
       (e) => e,

@@ -11,7 +11,7 @@ import { after, describe, it } from 'node:test'
 
 import { findDuplicates, listLocal } from '../src/tools/read.mjs'
 import { renameLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree, payload } from './helpers.mjs'
+import { apply, makeCtx, makeTree, payload } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -28,7 +28,7 @@ describe('paths and names are used exactly as given', () => {
     const t = await tree({ 'in/report': 'keep me' })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => trashLocal(ctx, { paths: [`${t.path('in/report')} `], confirm: true }),
+      () => apply(trashLocal, ctx, { paths: [`${t.path('in/report')} `]}),
       (e) => e.code === 'not_found',
     )
     assert.equal(await readFile(t.path('in/report'), 'utf8'), 'keep me')
@@ -38,7 +38,7 @@ describe('paths and names are used exactly as given', () => {
     const t = await tree({ 'in/a.txt': 'a', 'in/b.txt': 'b' })
     const ctx = await makeCtx([t.path('in')])
     const data = payload(
-      await renameLocal(ctx, { path: t.path('in/a.txt'), new_name: 'b.txt ', confirm: true }),
+      await apply(renameLocal, ctx, { path: t.path('in/a.txt'), new_name: 'b.txt '}),
     )
     assert.equal(data.to, t.path('in/b.txt '))
     assert.equal(await readFile(t.path('in/b.txt '), 'utf8'), 'a')

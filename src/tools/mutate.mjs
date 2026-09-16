@@ -25,6 +25,12 @@
 // The only thing of the user's ever removed is the source of a move that
 // crosses a device, and only once its copy has been flushed and verified; see
 // fsops.mjs. Everything else removed is this server's own temporary state.
+//
+// Rule 1 has a second half, added after the pre-publish review (D3): a
+// confirmed call must carry the `plan_token` its own preview returned, and the
+// tool refuses if the tree no longer matches what that preview described. Each
+// tool therefore builds a fingerprint next to its plan — the same fields, plus
+// the identity of every entry involved — and plans.mjs compares the two.
 
 import { lstat, mkdir, readdir } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
@@ -37,6 +43,7 @@ import {
   renameNoReplace,
 } from '../fsops.mjs'
 import { boundedList, LIMITS } from '../limits.mjs'
+import { entryId, requireApprovedPlan } from '../plans.mjs'
 import { isInside, resolveDestination, resolveEntry, resolveTarget, ToolError } from '../roots.mjs'
 import { TRASH_DIR_NAME } from '../scan.mjs'
 import {
@@ -288,7 +295,25 @@ export async function moveLocal(ctx, args) {
       : null,
   }
 
+  // The trash destination carries a timestamp that differs between the preview
+  // and the confirmation by design, so the fingerprint describes what is being
+  // moved and what it displaces, not where the displaced copy will land.
+  const fingerprint = {
+    action: 'move',
+    source: source.realPath,
+    destination: finalPath,
+    kind: size.kind,
+    files: size.files,
+    bytes: size.bytes,
+    replaces_existing: collision,
+    source_entry: entryId(source.stats),
+    destination_entry: entryId(final.stats),
+    displaced_files: collision ? displaced.files : 0,
+    displaced_bytes: collision ? displaced.bytes : 0,
+  }
+
   if (!args.confirm) {
+    const plan_token = ctx.plans.issue(fingerprint)
     return toolResult(
       `Planned (nothing changed): move ${size.kind} ${source.realPath} → ${finalPath} ` +
         `(${formatBytes(size.bytes)})` +
@@ -296,12 +321,13 @@ export async function moveLocal(ctx, args) {
           ? `. This DISPLACES an existing ${displaced.kind} of ${displaced.files} file(s), ` +
             `${formatBytes(displaced.bytes)}, which would be moved to the trash, not deleted`
           : '') +
-        '. Call again with confirm: true to perform it.',
-      { performed: false, ...plan },
+        '. Call again with confirm: true and this plan_token to perform it.',
+      { performed: false, ...plan, plan_token },
     )
   }
 
   refuseIfCancelled(ctx)
+  requireApprovedPlan(ctx, args.plan_token, fingerprint)
 
   // Re-resolve immediately before the write. It does not close the
   // time-of-check/time-of-use window — nothing path-based can, and SECURITY.md
@@ -459,15 +485,18 @@ export async function renameLocal(ctx, args) {
   }
 
   const plan = { action: 'rename', from: source.realPath, to: finalPath, kind: kindOf(source.stats) }
+  const fingerprint = { ...plan, from_entry: entryId(source.stats) }
   if (!args.confirm) {
+    const plan_token = ctx.plans.issue(fingerprint)
     return toolResult(
       `Planned (nothing changed): rename ${basename(source.realPath)} → ${newName} ` +
-        `in ${dirname(source.realPath)}. Call again with confirm: true.`,
-      { performed: false, ...plan },
+        `in ${dirname(source.realPath)}. Call again with confirm: true and this plan_token.`,
+      { performed: false, ...plan, plan_token },
     )
   }
 
   refuseIfCancelled(ctx)
+  requireApprovedPlan(ctx, args.plan_token, fingerprint)
 
   // The check above is for the preview. This is what keeps the promise: it
   // refuses if anything has appeared at the new name since.
@@ -496,14 +525,16 @@ export async function createLocalFolder(ctx, args) {
 
   const plan = { action: 'create_folder', path: dest.realPath }
   if (!args.confirm) {
+    const plan_token = ctx.plans.issue(plan)
     return toolResult(
       `Planned (nothing changed): create directory ${dest.realPath}. ` +
-        'Call again with confirm: true.',
-      { performed: false, ...plan },
+        'Call again with confirm: true and this plan_token.',
+      { performed: false, ...plan, plan_token },
     )
   }
 
   refuseIfCancelled(ctx)
+  requireApprovedPlan(ctx, args.plan_token, plan)
   await mkdir(dest.realPath, { recursive: true })
   return toolResult(`Created ${dest.realPath}.`, { performed: true, ...plan })
 }
@@ -594,19 +625,37 @@ export async function trashLocal(ctx, args) {
   const repeated = inputs.length - entries.length
   const places = [...new Set(items.map((i) => i.trash_directory))]
 
+  // The batch name is a timestamp taken per call, so neither it nor the
+  // destinations under it belong in the fingerprint; what the user approved is
+  // this set of sources, each still the entry they were shown, going to this
+  // set of trash directories.
+  const fingerprint = {
+    action: 'trash',
+    items: planned.map((p) => ({
+      source: p.entry.realPath,
+      trash_directory: join(p.base, TRASH_DIR_NAME),
+      kind: p.size.kind,
+      files: p.size.files,
+      bytes: p.size.bytes,
+      entry: entryId(p.entry.stats),
+    })),
+  }
+
   if (!args.confirm) {
+    const plan_token = ctx.plans.issue(fingerprint)
     return toolResult(
       `Planned (nothing changed): move ${items.length} item(s), ${totalFiles} file(s), ` +
         `${formatBytes(totalBytes)} into a new batch in ${places.join(', ')}. Nothing is ` +
         'deleted and no space is freed until you empty that directory yourself.' +
         (repeated ? ` ${repeated} repeated path(s) are counted once.` : '') +
-        ' Call again with confirm: true.',
+        ' Call again with confirm: true and this plan_token.',
       {
         performed: false,
         action: 'trash',
         trash_stamp: batch,
         repeated_paths_ignored: repeated,
         items,
+        plan_token,
         note:
           'The batch directory is named when the move is performed, so a confirmed ' +
           'call puts items in a batch with a different name from the one shown here.',
@@ -615,6 +664,7 @@ export async function trashLocal(ctx, args) {
   }
 
   refuseIfCancelled(ctx)
+  requireApprovedPlan(ctx, args.plan_token, fingerprint)
 
   // One batch per trash directory, each with a manifest that lists its items
   // before any of them moves.

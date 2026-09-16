@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { createPlanStore } from '../src/plans.mjs'
 import { resolveRoots } from '../src/roots.mjs'
 import {
   findDuplicates,
@@ -68,7 +69,8 @@ async function buildFixture() {
 async function main() {
   const root = await buildFixture()
   const { roots } = await resolveRoots([root])
-  const ctx = { roots, noRootsMessage: 'no roots', now: () => Date.now() }
+  const now = () => Date.now()
+  const ctx = { roots, noRootsMessage: 'no roots', now, plans: createPlanStore({ now }) }
   // macOS resolves /var to /private/var, and the tools report resolved paths,
   // so strip both spellings when printing.
   const realRoot = await realpath(root)
@@ -109,8 +111,15 @@ async function main() {
   const stillThere = await readdir(join(root, 'photos/2019'))
   console.log(`  photos/2019 still holds: ${stillThere.join(', ')}`)
 
-  heading('trash_local — confirmed, and reversible')
-  const done = await trashLocal(ctx, { paths: [target], confirm: true })
+  heading('trash_local — confirmed with the plan the preview issued')
+  // The confirmed call carries the token from that preview. Without it, or if
+  // the directory had changed since, this refuses instead of acting on a plan
+  // nobody saw.
+  const done = await trashLocal(ctx, {
+    paths: [target],
+    confirm: true,
+    plan_token: payload(preview).plan_token,
+  })
   console.log(summary(done))
   const after = await readdir(join(root, 'photos/2019'))
   console.log(`  photos/2019 now holds: ${after.join(', ')}`)

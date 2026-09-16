@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path'
 import { toolFailure } from '../src/format.mjs'
 import { TRASH_DIR_NAME } from '../src/scan.mjs'
 import { moveLocal, trashLocal, trashStamp } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree, payload, withPatchedFs } from './helpers.mjs'
+import { apply, makeCtx, makeTree, payload, withPatchedFs } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -35,7 +35,7 @@ describe('the trash directory is never followed out of the root', () => {
     const unsafe = (e) => e.code === 'trash_unsafe'
 
     await assert.rejects(() => trashLocal(ctx, { paths: [t.path('in/doc.txt')] }), unsafe)
-    await assert.rejects(() => trashLocal(ctx, { paths: [t.path('in/doc.txt')], confirm: true }), unsafe)
+    await assert.rejects(() => apply(trashLocal, ctx, { paths: [t.path('in/doc.txt')]}), unsafe)
 
     assert.equal(await readFile(t.path('in/doc.txt'), 'utf8'), 'mine')
     assert.deepEqual(await readdir(t.path('outside')), ['.keep'], 'nothing may be written through the link')
@@ -48,11 +48,10 @@ describe('the trash directory is never followed out of the root', () => {
 
     await assert.rejects(
       () =>
-        moveLocal(ctx, {
+        apply(moveLocal, ctx, {
           source: t.path('in/report.txt'),
           destination: t.path('in/dest'),
-          overwrite: true,
-          confirm: true,
+          overwrite: true
         }),
       (e) => e.code === 'trash_unsafe',
     )
@@ -86,9 +85,8 @@ describe('the trash manifest', () => {
     let err
     try {
       await withPatchedFs({ rename: lockAfterFirst, link: lockAfterFirst }, async () => {
-        err = await trashLocal(ctx, {
-          paths: [t.path('in/a.txt'), t.path('in/b.txt')],
-          confirm: true,
+        err = await apply(trashLocal, ctx, {
+          paths: [t.path('in/a.txt'), t.path('in/b.txt')]
         }).then(
           () => null,
           (e) => e,
@@ -124,7 +122,7 @@ describe('the trash manifest', () => {
     const ctx = await makeCtx([t.path('in')])
     const originals = Object.keys(spec).map((p) => t.path(p))
 
-    const results = await Promise.all(originals.map((p) => trashLocal(ctx, { paths: [p], confirm: true })))
+    const results = await Promise.all(originals.map((p) => apply(trashLocal, ctx, { paths: [p]})))
 
     const recorded = []
     for (const m of new Set(results.flatMap((r) => payload(r).manifests))) {
@@ -141,7 +139,7 @@ describe('the trash manifest', () => {
     await mkdir(dirname(planted), { recursive: true })
     await writeFile(planted, '{ "items": [ not json')
 
-    const data = payload(await trashLocal(ctx, { paths: [t.path('in/doc.txt')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [t.path('in/doc.txt')]}))
 
     assert.equal(await readFile(planted, 'utf8'), '{ "items": [ not json', 'the planted manifest must be untouched')
     assert.notEqual(data.manifests[0], planted)
@@ -170,9 +168,8 @@ describe('trash_local takes each item once', () => {
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
       () =>
-        trashLocal(ctx, {
-          paths: [t.path('in/other.txt'), t.path('in/folder'), t.path('in/folder/inner.txt')],
-          confirm: true,
+        apply(trashLocal, ctx, {
+          paths: [t.path('in/other.txt'), t.path('in/folder'), t.path('in/folder/inner.txt')]
         }),
       (e) => e.code === 'overlapping_paths',
     )
