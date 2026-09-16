@@ -51,6 +51,18 @@ SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp
 Whitespace around a root is ignored. In a path given to a tool it is not: there,
 every character is part of the path.
 
+## See it work first
+
+```bash
+npm run demo
+```
+
+`demo/run-demo.mjs` builds five files in a temporary directory — two with
+identical contents under different names, a same-size decoy, a 12 MB archive and
+a two-year-old PDF — runs the read tools over them, previews a trash call, then
+confirms it and shows the manifest. It touches nothing outside that directory
+and removes it at the end (`--keep` leaves it in place).
+
 ## What this cannot do
 
 **It cannot see your ShieldFive vault.** Not the file list, not the names, not
@@ -69,6 +81,15 @@ reading the token file. A server holding no token cannot read them at all.
 When a scoped, metadata-only key exists, vault tools can be added behind it.
 Until then this is a local file manager that happens to be published by the
 people who make an encrypted vault.
+
+**It cannot stop the results from reaching your AI provider.** This server
+makes no network request, and that is worth exactly what it says and no more:
+everything it returns — paths, file names, sizes, dates, the digests it
+reports — goes back to the AI client that called it, and if that client is a
+cloud assistant, those names travel to the assistant's provider like the rest
+of your conversation. The server's silence is not the client's. Choose roots on
+that basis: point it at the folders you would be willing to describe out loud,
+and it will never see anything else.
 
 **It will never infer that two files are the same from their names and sizes.**
 Duplicate detection reads both files and compares a full SHA-256 of their
