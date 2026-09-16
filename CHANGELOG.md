@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-16
+
+The first version published to npm. 0.1.0 below was tagged in this changelog
+and never published; nothing depends on its behaviour, but its contract did
+change here — a confirmed call now needs the `plan_token` its preview returned —
+so the version moves a minor step rather than a patch, as semver asks of a 0.x
+release that breaks callers.
+
 Fixes from a second review before the first publish. Each item has a test that
 failed before its fix.
 

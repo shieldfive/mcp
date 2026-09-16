@@ -1,6 +1,6 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Model Context Protocol server for local file management. Finds duplicates, large files and stale files across the drives you allow it, and reorganises them. Holds no ShieldFive credential and makes no network calls.",
   "license": "Apache-2.0",
