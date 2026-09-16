@@ -132,9 +132,16 @@ displaced item is put back.
 **Every tool that changes anything does nothing by default.** Call it without
 `confirm: true` and it resolves the paths, checks containment, reports exactly
 what it would do, and stops. The preview runs the same checks as the action, so
-a plan that reports a refusal is a refusal. The confirmed call plans again
-rather than replaying the preview, so if files change in between, what it does
-can differ from what the preview showed; see [Limits](#limits).
+a plan that reports a refusal is a refusal.
+
+**And a confirmed call has to be the plan you saw.** The preview returns a
+`plan_token`; `confirm: true` without it is refused. The confirmed call plans
+again from the filesystem as it is now, compares that plan with the one the
+token approved — the paths, what each entry is, its size and modification time,
+and the file and byte counts underneath it — and refuses if anything differs,
+naming what changed. A token performs one change and expires after ten minutes.
+So a directory that grew, a destination that appeared, or a path that now points
+at a different file stops the call instead of silently widening it.
 
 ## Tools
 
@@ -283,7 +290,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 142 tests. The ones worth knowing about:
+`npm test` runs 161 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
@@ -318,11 +325,15 @@ imports the stdio transport and no HTTP one, which is also asserted.
 
 ## Limits
 
-- **A confirmed call is not bound to its preview.** `confirm: true` plans the
-  operation again from scratch. If files changed after the preview, the action
-  follows the new state rather than the plan you approved. Tying the two
-  together — a token over the paths and their modification times — is the next
-  design step; it is not built.
+- **The plan check narrows the gap between preview and action; it does not
+  close it.** The comparison happens inside the confirmed call, so a change
+  arriving between that check and the write itself is still possible. Each tool
+  re-checks its own destination immediately before writing, which is what makes
+  that window small rather than absent, and no path-based tool can do better.
+- **A plan binds what it named.** For a directory, that is the entry itself plus
+  the file and byte counts underneath it — enough to catch content appearing,
+  disappearing or changing size, but not a file edited in place to exactly the
+  same length within the same second.
 - **Sizes are file-content sizes.** They exclude directory overhead and ignore
   filesystem compression, sparse files, hardlinks and APFS clones, so totals will
   not match a disk utility exactly; `storage_summary` counts every name of a

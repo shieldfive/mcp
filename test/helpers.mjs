@@ -4,6 +4,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { createPlanStore } from '../src/plans.mjs'
 import { resolveRoots } from '../src/roots.mjs'
 
 /**
@@ -39,9 +40,25 @@ export async function makeTree(spec) {
 }
 
 /** A context object shaped like the one server.mjs builds. */
-export async function makeCtx(rootPaths, { now = () => Date.UTC(2026, 8, 14) } = {}) {
+export async function makeCtx(rootPaths, { now = () => Date.UTC(2026, 8, 14), plans } = {}) {
   const { roots } = await resolveRoots(rootPaths)
-  return { roots, noRootsMessage: 'no roots', now }
+  return { roots, noRootsMessage: 'no roots', now, plans: plans ?? createPlanStore({ now }) }
+}
+
+/**
+ * Preview a mutating call, then perform it with the token that preview issued.
+ *
+ * What a client does, and what a confirmed call now requires. Tests that want
+ * to see a refusal at one phase or the other call the tool directly instead.
+ */
+export async function apply(handler, ctx, args) {
+  const planned = payload(await handler(ctx, args))
+  return handler(ctx, { ...args, confirm: true, plan_token: planned.plan_token })
+}
+
+/** The plan_token from a preview of this exact call. */
+export async function planToken(handler, ctx, args) {
+  return payload(await handler(ctx, args)).plan_token
 }
 
 /** The JSON payload a tool returned. */

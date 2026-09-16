@@ -14,7 +14,7 @@ import { dirname, join, sep } from 'node:path'
 
 import { TRASH_DIR_NAME } from '../src/scan.mjs'
 import { moveLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeFifo, makeTree, mountScratchVolume, payload, withPatchedFs } from './helpers.mjs'
+import { apply, makeCtx, makeFifo, makeTree, mountScratchVolume, payload, withPatchedFs } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -67,7 +67,7 @@ describe('across two devices inside one root', () => {
     await writeFile(join(vol, 'd7/video.mov'), 'x'.repeat(4096))
     const volumeDevice = (await stat(vol)).dev
 
-    const data = payload(await trashLocal(ctx, { paths: [join(vol, 'd7/video.mov')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [join(vol, 'd7/video.mov')]}))
 
     const [item] = data.items
     assert.ok(item.destination.startsWith(join(vol, TRASH_DIR_NAME) + sep), `trashed to ${item.destination}`)
@@ -83,7 +83,7 @@ describe('across two devices inside one root', () => {
     try {
       await writeFile(join(root, 'vol2/keep.txt'), 'keep')
       await assert.rejects(
-        () => trashLocal(ctx, { paths: [join(root, 'vol2')], confirm: true }),
+        () => apply(trashLocal, ctx, { paths: [join(root, 'vol2')]}),
         (e) => e.code === 'trash_no_same_volume',
       )
       assert.equal(await readFile(join(root, 'vol2/keep.txt'), 'utf8'), 'keep')
@@ -99,7 +99,7 @@ describe('across two devices inside one root', () => {
     await writeFile(source, 'plain notes')
     await mkdir(join(vol, 'plain'))
 
-    const data = payload(await moveLocal(ctx, { source, destination: join(vol, 'plain'), confirm: true }))
+    const data = payload(await apply(moveLocal, ctx, { source, destination: join(vol, 'plain')}))
 
     assert.equal(data.method, 'copy+remove')
     assert.equal(await readFile(join(vol, 'plain/notes.txt'), 'utf8'), 'plain notes')
@@ -117,11 +117,10 @@ describe('across two devices inside one root', () => {
     await mkdir(join(root, 'local/d2'), { recursive: true })
     await symlink(join(outside, 'planted.txt'), join(root, 'local/d2/report.txt'))
     const move = (extra) =>
-      moveLocal(ctx, {
+      apply(moveLocal, ctx, {
         source: join(vol, 'd2/report.txt'),
         destination: join(root, 'local/d2'),
-        confirm: true,
-        ...extra,
+        ...extra
       })
 
     await assert.rejects(() => move({}), (e) => e.code === 'destination_exists')
@@ -145,10 +144,9 @@ describe('across two devices inside one root', () => {
     await writeFile(join(vol, 'd8a/album.shieldfive-mcp-incoming/precious.txt'), 'not ours to delete')
 
     const data = payload(
-      await moveLocal(ctx, {
+      await apply(moveLocal, ctx, {
         source: join(root, 'local/d8a/album'),
-        destination: join(vol, 'd8a'),
-        confirm: true,
+        destination: join(vol, 'd8a')
       }),
     )
 
@@ -172,10 +170,9 @@ describe('across two devices inside one root', () => {
 
     await assert.rejects(
       () =>
-        moveLocal(ctx, {
+        apply(moveLocal, ctx, {
           source: join(root, 'local/d8b/project'),
-          destination: join(vol, 'd8b'),
-          confirm: true,
+          destination: join(vol, 'd8b')
         }),
       (e) => e.code === 'special_file_in_tree',
     )
@@ -207,7 +204,7 @@ describe('across two devices inside one root', () => {
 
     await withPatchedFs({ copyFile: corrupt }, () =>
       assert.rejects(
-        () => moveLocal(ctx, { source, destination: join(vol, 'd8c'), confirm: true }),
+        () => apply(moveLocal, ctx, { source, destination: join(vol, 'd8c')}),
         (e) => e.code === 'copy_verification_failed',
       ),
     )
@@ -230,7 +227,7 @@ describe('across two devices inside one root', () => {
 
     await withPatchedFs({ copyFile: grow }, () =>
       assert.rejects(
-        () => moveLocal(ctx, { source, destination: join(vol, 'd8e'), confirm: true }),
+        () => apply(moveLocal, ctx, { source, destination: join(vol, 'd8e')}),
         (e) => e.code === 'source_changed',
       ),
     )
@@ -245,7 +242,7 @@ describe('across two devices inside one root', () => {
     await writeFile(source, Buffer.alloc(24 * 1024 * 1024, 7)) // bigger than the 20 MiB volume
     await mkdir(join(vol, 'd8d'))
 
-    await assert.rejects(() => moveLocal(ctx, { source, destination: join(vol, 'd8d'), confirm: true }))
+    await assert.rejects(() => apply(moveLocal, ctx, { source, destination: join(vol, 'd8d')}))
 
     assert.equal((await stat(source)).size, 24 * 1024 * 1024)
     assert.deepEqual(await readdir(join(vol, 'd8d')), [])

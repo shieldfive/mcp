@@ -12,6 +12,13 @@ failed before its fix.
 
 ### Security
 
+- A confirmed call was not bound to the preview the user approved. `confirm:
+  true` planned the operation again from scratch, so a directory that had grown,
+  a destination that had appeared, or a path that now pointed at a different file
+  was acted on without the user ever being shown it. Each preview now returns a
+  `plan_token`; a confirmed call must carry it, and the tool refuses
+  (`plan_changed`) when the plan it builds differs from the one approved, naming
+  what changed. Tokens are single use and expire after ten minutes.
 - The trash directory was never resolved or `lstat`'d. With
   `<root>/.shieldfive-mcp-trash` a symlink out of the root, `trash_local` and an
   overwriting `move_local` moved the user's files and the manifest out of the
@@ -102,9 +109,6 @@ failed before its fix.
 
 ### Not covered
 
-- A confirmed call is not bound to the preview the user approved: `confirm:
-  true` plans again from scratch. A token over the paths and their modification
-  times is the next design step.
 - The cross-device tests need a RAM disk and run only on macOS; elsewhere they
   are skipped, visibly. Windows remains untested.
 

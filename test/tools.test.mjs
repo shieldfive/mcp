@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { TRASH_DIR_NAME } from '../src/scan.mjs'
 import { findDuplicates, findLargeFiles, findOldFiles, listLocal, storageSummary } from '../src/tools/read.mjs'
 import { createLocalFolder, moveLocal, renameLocal, trashLocal } from '../src/tools/mutate.mjs'
-import { makeCtx, makeTree, payload, summary } from './helpers.mjs'
+import { apply, makeCtx, makeTree, payload, summary } from './helpers.mjs'
 
 const trees = []
 async function tree(spec) {
@@ -153,10 +153,9 @@ describe('confirm gating', () => {
   it('move_local moves with confirm, into a directory destination', async () => {
     const t = await tree({ 'in/a.txt': 'x', 'in/dest': null })
     const ctx = await makeCtx([t.path('in')])
-    const res = await moveLocal(ctx, {
+    const res = await apply(moveLocal, ctx, {
       source: t.path('in/a.txt'),
-      destination: t.path('in/dest'),
-      confirm: true,
+      destination: t.path('in/dest')
     })
     assert.equal(payload(res).performed, true)
     assert.equal(await gone(t.path('in/a.txt')), true)
@@ -167,7 +166,7 @@ describe('confirm gating', () => {
     const t = await tree({ 'in/a.txt': 'new', 'in/dest/a.txt': 'old' })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => moveLocal(ctx, { source: t.path('in/a.txt'), destination: t.path('in/dest'), confirm: true }),
+      () => apply(moveLocal, ctx, { source: t.path('in/a.txt'), destination: t.path('in/dest')}),
       (e) => e.code === 'destination_exists',
     )
     assert.equal(await readFile(t.path('in/dest/a.txt'), 'utf8'), 'old')
@@ -178,10 +177,9 @@ describe('confirm gating', () => {
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
       () =>
-        moveLocal(ctx, {
+        apply(moveLocal, ctx, {
           source: t.path('in/parent'),
-          destination: t.path('in/parent/nested'),
-          confirm: true,
+          destination: t.path('in/parent/nested')
         }),
       (e) => e.code === 'destination_inside_source',
     )
@@ -191,7 +189,7 @@ describe('confirm gating', () => {
     const t = await tree({ 'in/a.txt': 'x', out: null })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => moveLocal(ctx, { source: t.path('in/a.txt'), destination: t.path('out/a.txt'), confirm: true }),
+      () => apply(moveLocal, ctx, { source: t.path('in/a.txt'), destination: t.path('out/a.txt')}),
       (e) => e.code === 'outside_roots',
     )
   })
@@ -200,7 +198,7 @@ describe('confirm gating', () => {
     const t = await tree({ 'in/a.txt': 'x' })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => renameLocal(ctx, { path: t.path('in/a.txt'), new_name: '../escaped.txt', confirm: true }),
+      () => apply(renameLocal, ctx, { path: t.path('in/a.txt'), new_name: '../escaped.txt'}),
       (e) => e.code === 'invalid_name',
     )
   })
@@ -209,7 +207,7 @@ describe('confirm gating', () => {
     const t = await tree({ 'in/a.txt': 'a', 'in/b.txt': 'b' })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => renameLocal(ctx, { path: t.path('in/a.txt'), new_name: 'b.txt', confirm: true }),
+      () => apply(renameLocal, ctx, { path: t.path('in/a.txt'), new_name: 'b.txt'}),
       (e) => e.code === 'destination_exists',
     )
     assert.equal(await readFile(t.path('in/b.txt'), 'utf8'), 'b')
@@ -223,10 +221,10 @@ describe('confirm gating', () => {
     assert.equal(await gone(t.path('in/new')), true)
 
     assert.equal(
-      payload(await createLocalFolder(ctx, { path: t.path('in/new'), confirm: true })).performed,
+      payload(await apply(createLocalFolder, ctx, { path: t.path('in/new')})).performed,
       true,
     )
-    const again = payload(await createLocalFolder(ctx, { path: t.path('in/new'), confirm: true }))
+    const again = payload(await apply(createLocalFolder, ctx, { path: t.path('in/new')}))
     assert.equal(again.already_existed, true)
   })
 })
@@ -235,7 +233,7 @@ describe('trash_local', () => {
   it('moves rather than deletes, and says no space was freed', async () => {
     const t = await tree({ 'in/junk.txt': 'junk bytes' })
     const ctx = await makeCtx([t.path('in')])
-    const res = await trashLocal(ctx, { paths: [t.path('in/junk.txt')], confirm: true })
+    const res = await apply(trashLocal, ctx, { paths: [t.path('in/junk.txt')]})
     const data = payload(res)
 
     assert.equal(data.performed, true)
@@ -251,7 +249,7 @@ describe('trash_local', () => {
   it('writes a manifest that names where each item came from', async () => {
     const t = await tree({ 'in/doc.txt': 'x' })
     const ctx = await makeCtx([t.path('in')])
-    const data = payload(await trashLocal(ctx, { paths: [t.path('in/doc.txt')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [t.path('in/doc.txt')]}))
     const manifest = JSON.parse(await readFile(data.manifests[0], 'utf8'))
     assert.equal(manifest.items[0].original_path, t.path('in/doc.txt'))
     assert.match(manifest.note, /Nothing here is deleted/)
@@ -261,7 +259,7 @@ describe('trash_local', () => {
     const t = await tree({ 'in/x.txt': 'x' })
     const ctx = await makeCtx([t.path('in')])
     await assert.rejects(
-      () => trashLocal(ctx, { paths: [t.path('in')], confirm: true }),
+      () => apply(trashLocal, ctx, { paths: [t.path('in')]}),
       (e) => e.code === 'cannot_trash_root',
     )
   })
@@ -269,9 +267,9 @@ describe('trash_local', () => {
   it('refuses to re-trash something already in the trash', async () => {
     const t = await tree({ 'in/x.txt': 'x' })
     const ctx = await makeCtx([t.path('in')])
-    const data = payload(await trashLocal(ctx, { paths: [t.path('in/x.txt')], confirm: true }))
+    const data = payload(await apply(trashLocal, ctx, { paths: [t.path('in/x.txt')]}))
     await assert.rejects(
-      () => trashLocal(ctx, { paths: [data.items[0].destination], confirm: true }),
+      () => apply(trashLocal, ctx, { paths: [data.items[0].destination]}),
       (e) => e.code === 'already_trashed',
     )
   })
@@ -287,7 +285,7 @@ describe('trash_local', () => {
   it('does not re-offer trashed files on a later scan', async () => {
     const t = await tree({ 'in/a.txt': 'SAME', 'in/b.txt': 'SAME' })
     const ctx = await makeCtx([t.path('in')])
-    await trashLocal(ctx, { paths: [t.path('in/b.txt')], confirm: true })
+    await apply(trashLocal, ctx, { paths: [t.path('in/b.txt')]})
     const data = payload(await findDuplicates(ctx, {}))
     assert.equal(data.duplicate_groups, 0, 'the trashed copy must not count as a duplicate')
   })
@@ -298,7 +296,7 @@ describe('no roots configured', () => {
     const ctx = { roots: [], noRootsMessage: 'configure roots', now: () => 0 }
     await assert.rejects(() => listLocal(ctx, {}), (e) => e.code === 'no_roots')
     await assert.rejects(
-      () => moveLocal(ctx, { source: '/a', destination: '/b', confirm: true }),
+      () => apply(moveLocal, ctx, { source: '/a', destination: '/b'}),
       (e) => e.code === 'no_roots',
     )
   })
@@ -310,10 +308,9 @@ describe('cross-root isolation', () => {
     // between them is still contained, so this documents that it IS allowed.
     const t = await tree({ 'one/a.txt': 'x', 'two/.keep': '' })
     const ctx = await makeCtx([t.path('one'), t.path('two')])
-    const res = await moveLocal(ctx, {
+    const res = await apply(moveLocal, ctx, {
       source: t.path('one/a.txt'),
-      destination: join(t.path('two'), 'a.txt'),
-      confirm: true,
+      destination: join(t.path('two'), 'a.txt')
     })
     assert.equal(payload(res).performed, true)
     assert.equal(await readFile(t.path('two/a.txt'), 'utf8'), 'x')

@@ -30,6 +30,7 @@ import { z } from 'zod'
 
 import { toolFailure } from './format.mjs'
 import { LIMITS } from './limits.mjs'
+import { createPlanStore } from './plans.mjs'
 import { NO_ROOTS_MESSAGE, resolveRoots, rootCandidatesFrom, ToolError } from './roots.mjs'
 import {
   findDuplicates,
@@ -56,6 +57,15 @@ const pathArg = z
   .string()
   .max(LIMITS.pathChars, 'path is longer than any filesystem accepts')
   .describe('Absolute path. Must resolve inside a configured root; relative paths are refused.')
+
+// A confirmed call carries the token its own preview returned; see plans.mjs.
+const planTokenArg = z
+  .string()
+  .optional()
+  .describe(
+    'The plan_token this tool returned when called without confirm. Required with ' +
+      'confirm: true, single use, and only valid while the plan still matches the tree.',
+  )
 
 const scanArgs = {
   path: pathArg.optional().describe('Directory to scan. Omit to scan every configured root.'),
@@ -164,6 +174,7 @@ const TOOLS = [
       ),
       overwrite: z.boolean().optional().describe('Replace the destination if it exists.'),
       confirm: z.boolean().optional().describe('Required to actually move anything.'),
+      plan_token: planTokenArg
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     handler: moveLocal,
@@ -182,6 +193,7 @@ const TOOLS = [
         .max(LIMITS.nameBytes)
         .describe('The new filename, used exactly as given: no directory separators, at most 255 bytes.'),
       confirm: z.boolean().optional().describe('Required to actually rename.'),
+      plan_token: planTokenArg
     },
     annotations: {
       readOnlyHint: false,
@@ -200,6 +212,7 @@ const TOOLS = [
     inputSchema: {
       path: pathArg,
       confirm: z.boolean().optional().describe('Required to actually create it.'),
+      plan_token: planTokenArg
     },
     annotations: {
       readOnlyHint: false,
@@ -225,6 +238,7 @@ const TOOLS = [
         .max(LIMITS.paths)
         .describe('Absolute paths to move into the trash, at most 1,000.'),
       confirm: z.boolean().optional().describe('Required to actually move anything.'),
+      plan_token: planTokenArg
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     handler: trashLocal,
@@ -282,7 +296,8 @@ export function createServer(ctx) {
         'user a local file is backed up: this server cannot know that, and guessing ' +
         'from a filename and size is how the only copy of something gets deleted. ' +
         'Mutating tools do nothing until called with confirm: true — show the user ' +
-        'the plan first.',
+        'the plan first, then pass back the plan_token that preview returned. A ' +
+        'confirmed call without it, or after the files have changed, is refused.',
     },
   )
 
@@ -313,7 +328,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     log(NO_ROOTS_MESSAGE)
   }
 
-  const ctx = { roots, noRootsMessage: NO_ROOTS_MESSAGE, now: () => Date.now() }
+  const now = () => Date.now()
+  const ctx = { roots, noRootsMessage: NO_ROOTS_MESSAGE, now, plans: createPlanStore({ now }) }
   const server = createServer(ctx)
   await server.connect(new StdioServerTransport())
   log('ready on stdio.')
