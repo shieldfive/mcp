@@ -248,6 +248,22 @@ describe('vault permissions', () => {
     assert.match(rn.error, /fixed_item/)
   })
 
+  it('names with control or bidi characters survive a move byte for byte, and new names cannot contain them', async () => {
+    await connect()
+    const rtl = `invoice${String.fromCharCode(0x202e)}fdp.exe`
+    // The owner has such a name already (their own business); the agent moves it.
+    const { encryptNameV6 } = await import('@shieldfive/crypto/vault')
+    const f = vault.files.get(vault.ids.taxPdf)
+    f.name = JSON.stringify(await encryptNameV6({ name: rtl, folderKey: vault.folders.get(vault.ids.tax).fk, rowId: f.id }))
+    const listed = await call('vault_list_files')
+    assert.ok(!JSON.stringify(listed.data).includes(String.fromCharCode(0x202e)), 'shown sanitized')
+    const mv = await confirmed('vault_move', { item_id: vault.ids.taxPdf, destination_folder_id: vault.ids.photos })
+    assert.equal(mv.error, null, mv.error)
+    assert.equal(await vault.ownerName(vault.ids.taxPdf), rtl, 'the real name is preserved exactly')
+    const bad = await call('vault_rename', { item_id: vault.ids.taxPdf, new_name: rtl })
+    assert.match(bad.error, /invalid_name/)
+  })
+
   it('a malformed connection string is refused without echoing it', async () => {
     await assert.rejects(
       loadGrantCredential({ SHIELDFIVE_GRANT: 'sf-grant-v1:not-really.secret-looking-value' }, async () => null),

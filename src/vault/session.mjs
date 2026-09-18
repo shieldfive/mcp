@@ -93,6 +93,7 @@ export function createVaultSession({ credential, api, names }) {
     // Names, in parallel on the worker pool.
     const total = folderRows.length + fileRows.length
     let done = 0
+    // Raw names are what writes re-seal; display names are what the model sees.
     const nameOf = async (row, parentId, isRoot) => {
       let name = null
       if (row.id === grant.trashFolderId) name = TRASH_LABEL
@@ -104,7 +105,7 @@ export function createVaultSession({ credential, api, names }) {
         if (k) name = await names.decrypt({ raw: row.name, key: k, rowId: row.id })
       }
       onProgress?.(++done, total)
-      return displayName(name)
+      return name
     }
     const folderNames = await Promise.all(folderRows.map((f) => nameOf(f, f.parentId, f.isScopeRoot)))
     const fileNames = await Promise.all(fileRows.map((f) => nameOf(f, f.folderId, false)))
@@ -113,7 +114,8 @@ export function createVaultSession({ credential, api, names }) {
     folderRows.forEach((f, i) => {
       folders.set(f.id, {
         id: f.id,
-        name: folderNames[i],
+        name: displayName(folderNames[i]),
+        rawName: folderNames[i],
         parentId: f.isScopeRoot ? null : f.parentId,
         isScopeRoot: f.isScopeRoot,
         inTrash: f.inTrash,
@@ -134,17 +136,18 @@ export function createVaultSession({ credential, api, names }) {
 
     const files = new Map()
     fileRows.forEach((f, i) => {
-      const name = fileNames[i]
+      const name = displayName(fileNames[i])
       files.set(f.id, {
         id: f.id,
         name,
+        rawName: fileNames[i],
         path: `${f.folderId ? pathOf(f.folderId) : ''}/${name ?? '[name unavailable]'}`,
         folderId: f.folderId,
         size: f.size ?? null,
         ciphertextSize: f.ciphertextSize ?? null,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
-        contentType: f.contentType ?? null,
+        contentType: typeof f.contentType === 'string' ? displayName(f.contentType.slice(0, 100)) : null,
         cipherVersion: f.cipherVersion,
         inTrash: f.inTrash,
         readable: contentKeyAvailable(f, folderKeys, wraps),

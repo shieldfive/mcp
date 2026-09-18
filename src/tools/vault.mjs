@@ -21,6 +21,7 @@ import { boundedInt } from '../limits.mjs'
 import { requireApprovedPlan } from '../plans.mjs'
 import { ToolError } from '../roots.mjs'
 import { classicalKey, contentKey, decryptContent, sha256Hex } from '../vault/content.mjs'
+import { displayName } from '../vault/session.mjs'
 
 export const VAULT_LIMITS = Object.freeze({
   listLimit: 5_000,
@@ -344,14 +345,24 @@ const identity = ({ kind, item }) => ({
 })
 
 function validName(name) {
-  if (typeof name !== 'string' || !name.trim() || name === '.' || name === '..' || /[/\\]/.test(name) || Buffer.byteLength(name) > 255) {
+  // A name the model writes must look the same to the owner as it does here:
+  // no control, line-separator or bidi characters (displayName would alter it).
+  if (
+    typeof name !== 'string' ||
+    !name.trim() ||
+    name === '.' ||
+    name === '..' ||
+    /[/\\]/.test(name) ||
+    Buffer.byteLength(name) > 255 ||
+    displayName(name) !== name
+  ) {
     throw new ToolError('invalid_name', `${quote(name, 80)} is not a valid name: no slashes, not empty, at most 255 bytes.`)
   }
   return name
 }
 
 function requireReadableName(it) {
-  if (!it.item.name) {
+  if (typeof it.item.rawName !== 'string') {
     throw new ToolError(
       'name_unavailable',
       'This item’s current name could not be decrypted, so it cannot be moved or renamed ' +
@@ -444,7 +455,7 @@ export async function vaultMove(ctx, args) {
     })
   }
   requireApprovedPlan(ctx, args.plan_token, plan)
-  const sealed = await resealFor(view, it, dest.id, it.item.name)
+  const sealed = await resealFor(view, it, dest.id, it.item.rawName)
   const r =
     it.kind === 'file'
       ? await ctx.vault.api.patchFile(it.item.id, { folderId: dest.id, name: sealed.name, cskWrapped: sealed.cskWrapped, cskIv: sealed.cskIv, ...(sealed.pqkFkWrapped ? { pqkFkWrapped: sealed.pqkFkWrapped, pqkFkIv: sealed.pqkFkIv } : {}) }, ctx.signal)
@@ -507,12 +518,21 @@ export async function vaultTrash(ctx, args) {
   requireApprovedPlan(ctx, args.plan_token, plan)
   const payload = []
   for (const it of items) {
-    const s = await resealFor(view, it, trashId, it.item.name)
+    const s = await resealFor(view, it, trashId, it.item.rawName)
     delete s.kind
     payload.push({ kind: it.kind, ...s })
   }
   const r = await ctx.vault.api.trash(payload, ctx.signal)
-  const results = (r.results ?? []).map((x) => ({ ...x, path: view.files.get(x.id)?.path ?? view.folders.get(x.id)?.path }))
+  // Only fields this server understands, never whatever else the response carried.
+  const known = new Set(ids)
+  const results = (r.results ?? [])
+    .filter((x) => known.has(x.id))
+    .map((x) => ({
+      id: x.id,
+      ok: x.ok === true,
+      ...(x.ok ? { audit_id: Number(x.auditId) || undefined } : { code: typeof x.code === 'string' ? displayName(x.code.slice(0, 40)) : 'error' }),
+      path: view.files.get(x.id)?.path ?? view.folders.get(x.id)?.path,
+    }))
   const moved = results.filter((x) => x.ok)
   const failed = results.filter((x) => !x.ok)
   return vaultResult(

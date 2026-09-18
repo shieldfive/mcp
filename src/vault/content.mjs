@@ -51,8 +51,8 @@ export async function decryptContent(file, view, api, { maxBytes, signal }) {
         'readable after the owner next opens ShieldFive on a device with their full keys.',
     )
   }
-  const { url } = await api.downloadUrl(file.id, signal)
-  const ciphertext = await api.ciphertext(url, maxBytes + 1024 * 1024, signal)
+  // Ciphertext is a little larger than plaintext (header + per-chunk tags).
+  const ciphertext = await api.download(file.id, maxBytes + 1024 * 1024, signal)
   const blob = new Blob([ciphertext])
   const row = file.raw
   let out

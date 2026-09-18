@@ -12,6 +12,20 @@ import { ToolError } from '../roots.mjs'
 export const DEFAULT_API_URL = 'https://shieldfive.com'
 const TIMEOUT_MS = 30_000
 
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t)
+        reject(signal.reason)
+      },
+      { once: true },
+    )
+  })
+}
+
 export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImpl = fetch }) {
   const bearer = grantBearerToken(credential)
   const origin = new URL(baseUrl)
@@ -28,14 +42,7 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
         return await once(method, path, body, signal)
       } catch (err) {
         if (err?.code !== 'rate_limited' || attempt >= 3 || signal?.aborted) throw err
-        const waitMs = Math.min(60_000, (err.retryAfterSeconds ?? 15 * (attempt + 1)) * 1000)
-        await new Promise((resolve, reject) => {
-          const t = setTimeout(resolve, waitMs)
-          signal?.addEventListener('abort', () => {
-            clearTimeout(t)
-            reject(signal.reason)
-          }, { once: true })
-        })
+        await sleep(Math.min(60_000, (err.retryAfterSeconds ?? 15 * (attempt + 1)) * 1000), signal)
       }
     }
   }
@@ -59,9 +66,15 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
       if (signal?.aborted) throw err
       throw new ToolError('network_error', 'Could not reach ShieldFive. Nothing was changed.')
     }
+    if (res.ok) return res.json().catch(() => ({}))
+    return failure(res)
+  }
+
+  async function failure(res) {
     const data = await res.json().catch(() => ({}))
-    if (res.ok) return data
-    const code = typeof data.code === 'string' ? data.code : `http_${res.status}`
+    // The server's code is echoed to the model, so only a plain identifier passes.
+    const code =
+      typeof data.code === 'string' && /^[a-z_]{1,40}$/.test(data.code) ? data.code : `http_${res.status}`
     if (res.status === 401) {
       throw new ToolError(
         'grant_invalid',
@@ -72,7 +85,7 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     if (res.status === 403 && code === 'missing_scope') {
       throw new ToolError(
         'missing_scope',
-        `This connection does not include the "${data.scope ?? 'organize'}" permission. ` +
+        `This connection does not include the "${data.scope === 'read' ? 'read' : 'organize'}" permission. ` +
           'The vault owner can create a connection with it in Settings → AI assistants.',
       )
     }
@@ -98,6 +111,30 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     throw new ToolError(code, `ShieldFive refused the request (${res.status}). Nothing was changed.`)
   }
 
+  // A download that fails is reported through the same error mapping as every
+  // other call (401 revoked, 429 quota, …); a success is the byte stream.
+  async function rawDownload(id, signal) {
+    for (let attempt = 0; ; attempt++) {
+      const url = new URL(`/api/agent/v1/files/${id}/download`, origin)
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${bearer}` },
+        signal,
+        cache: 'no-store',
+      }).catch((err) => {
+        if (signal?.aborted) throw err
+        throw new ToolError('network_error', 'Could not reach ShieldFive.')
+      })
+      if (res.ok && res.body) return res
+      try {
+        await failure(res)
+      } catch (err) {
+        if (err?.code !== 'rate_limited' || attempt >= 3 || signal?.aborted) throw err
+        await sleep(Math.min(60_000, (err.retryAfterSeconds ?? 15 * (attempt + 1)) * 1000), signal)
+      }
+    }
+  }
+
   async function listAll(path, key, signal) {
     const out = []
     let after = null
@@ -116,20 +153,38 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     folders: (signal) => listAll('/folders', 'folders', signal),
     files: (signal) => listAll('/files', 'files', signal),
     stats: (signal) => call('GET', '/stats', undefined, signal),
-    downloadUrl: (id, signal) => call('POST', `/files/${id}/download`, {}, signal),
+    /**
+     * The file's ciphertext, streamed through ShieldFive (no storage URL is ever
+     * handed out). Refused past `maxBytes` without buffering the rest.
+     */
+    async download(id, maxBytes, signal) {
+      const res = await rawDownload(id, signal)
+      const len = Number(res.headers.get('content-length') ?? 0)
+      if (len && len > maxBytes) throw new ToolError('too_large', 'File exceeds the size cap.')
+      const reader = res.body.getReader()
+      const parts = []
+      let total = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.length
+        if (total > maxBytes) {
+          await reader.cancel()
+          throw new ToolError('too_large', 'File exceeds the size cap.')
+        }
+        parts.push(value)
+      }
+      const out = new Uint8Array(total)
+      let off = 0
+      for (const p of parts) {
+        out.set(p, off)
+        off += p.length
+      }
+      return out
+    },
     patchFile: (id, body, signal) => call('PATCH', `/files/${id}`, body, signal),
     patchFolder: (id, body, signal) => call('PATCH', `/folders/${id}`, body, signal),
     createFolder: (body, signal) => call('POST', '/folders', body, signal),
     trash: (items, signal) => call('POST', '/trash', { items }, signal),
-    /** Ciphertext from a signed URL. The URL is not logged or returned. */
-    async ciphertext(url, maxBytes, signal) {
-      const res = await fetchImpl(url, { signal })
-      if (!res.ok) throw new ToolError('download_failed', `Download failed (${res.status}).`)
-      const len = Number(res.headers.get('content-length') ?? 0)
-      if (len && len > maxBytes) throw new ToolError('too_large', 'File exceeds the size cap.')
-      const buf = new Uint8Array(await res.arrayBuffer())
-      if (buf.length > maxBytes) throw new ToolError('too_large', 'File exceeds the size cap.')
-      return buf
-    },
   }
 }

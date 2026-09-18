@@ -23,7 +23,25 @@ export function createNamePool({ size = Math.max(1, Math.min(8, availableParalle
       idle.push(w)
       pump()
     })
+    // A crashed worker must not strand its job: fail that name (it shows as
+    // unavailable), drop the worker and start a replacement.
     w.on('error', () => {})
+    w.on('exit', () => {
+      for (const [id, job] of pending) {
+        if (job.worker === w) {
+          pending.delete(id)
+          job.resolve(null)
+        }
+      }
+      const i = workers.indexOf(w)
+      if (i >= 0) workers.splice(i, 1)
+      const j = idle.indexOf(w)
+      if (j >= 0) idle.splice(j, 1)
+      if (!closing) {
+        startWorker()
+        pump()
+      }
+    })
     workers.push(w)
     idle.push(w)
   }
@@ -32,6 +50,7 @@ export function createNamePool({ size = Math.max(1, Math.min(8, availableParalle
     while (idle.length && queue.length) {
       const w = idle.pop()
       const job = queue.shift()
+      job.worker = w
       pending.set(job.msg.id, job)
       w.postMessage(job.msg)
     }
@@ -59,7 +78,9 @@ export function createNamePool({ size = Math.max(1, Math.min(8, availableParalle
     })
   }
 
+  let closing = false
   async function close() {
+    closing = true
     await Promise.all(workers.map((w) => w.terminate()))
     workers.length = 0
     idle.length = 0

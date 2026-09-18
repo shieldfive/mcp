@@ -203,7 +203,8 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
       if (!f || !fileScope(f)) return json(404, { code: 'not_found' })
       if (state.quotaExceeded) return json(429, { code: 'transfer_limit' })
       state.audit.push({ action: 'download', id: f.id })
-      return json(200, { url: `https://blob.test/${f.id}`, expiresInSeconds: 60 })
+      // Streamed through the API, as the real route does: no URL, no storage key.
+      return new Response(blobs.get(f.id), { status: 200, headers: { 'content-type': 'application/octet-stream' } })
     }
     const applyFile = (id, b, dest) => {
       const f = files.get(id)
