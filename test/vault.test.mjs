@@ -120,6 +120,22 @@ describe('vault tools', () => {
     assert.match(texts[0], /1 group/)
   })
 
+  it('an exhausted download quota stops hashing at once and says so', async () => {
+    vault.state.quotaExceeded = true
+    const { data, texts } = await call('vault_find_duplicates')
+    assert.equal(data.stopped_early, 'quota_exceeded')
+    assert.match(texts[0], /LOWER BOUND/)
+    const downloads = vault.state.requests.filter((q) => q.path.endsWith('/download'))
+    assert.equal(downloads.length, 1, 'no retries and no further downloads after a quota refusal')
+  })
+
+  it('a rate-limited request waits and retries', async () => {
+    vault.state.rateLimitOnce = true
+    const r = await call('vault_storage_stats')
+    assert.equal(r.error, null)
+    assert.equal(vault.state.rateLimitOnce, false)
+  })
+
   it('an out-of-scope id is refused everywhere', async () => {
     for (const [tool, args] of [
       ['vault_read_file', { file_id: vault.ids.secret }],

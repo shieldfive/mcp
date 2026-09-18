@@ -170,6 +170,10 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     if (init.headers?.authorization !== bearer || state.revoked || Date.parse(state.expiresAt) <= Date.now()) {
       return json(401, { code: 'grant_invalid' })
     }
+    if (state.rateLimitOnce) {
+      state.rateLimitOnce = false
+      return new Response(JSON.stringify({ code: 'rate_limited' }), { status: 429, headers: { 'retry-after': '0.01' } })
+    }
     const body = init.body ? JSON.parse(init.body) : {}
     const organize = () => (grant.scopes.includes('organize') ? null : json(403, { code: 'missing_scope', scope: 'organize' }))
     let m
@@ -197,6 +201,7 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     if ((m = /^\/files\/([^/]+)\/download$/.exec(path))) {
       const f = files.get(m[1])
       if (!f || !fileScope(f)) return json(404, { code: 'not_found' })
+      if (state.quotaExceeded) return json(429, { code: 'transfer_limit' })
       state.audit.push({ action: 'download', id: f.id })
       return json(200, { url: `https://blob.test/${f.id}`, expiresInSeconds: 60 })
     }

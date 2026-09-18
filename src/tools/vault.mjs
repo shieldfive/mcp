@@ -214,6 +214,7 @@ export async function vaultFindDuplicates(ctx, args) {
   let done = 0
   const unverified = []
   const hashes = new Map()
+  let stopReason = null
   for (const f of toHash) {
     if (ctx.signal?.aborted) break
     if (!f.readable) {
@@ -233,9 +234,14 @@ export async function vaultFindDuplicates(ctx, args) {
       spent += bytes.length
       hashes.set(f.id, sha256Hex(bytes))
     } catch (err) {
+      // A revoked grant ends the call; an exhausted quota ends hashing (every
+      // further download would be refused too) but still reports what was found.
+      if (err?.code === 'grant_invalid') throw err
       unverified.push({ ...fileOut(f), reason: err?.code ?? 'error' })
+      if (err?.code === 'quota_exceeded') stopReason = 'quota_exceeded'
     }
     ctx.progress?.(++done, toHash.length, 'Hashing candidate files')
+    if (stopReason) break
   }
 
   const groups = []
@@ -265,7 +271,13 @@ export async function vaultFindDuplicates(ctx, args) {
       (unverified.length
         ? ` ${unverified.length} same-size file(s) could NOT be checked, so this is a LOWER BOUND — see "unverified".`
         : ''),
-    { groups, reclaimable_bytes: reclaimable, hashed_bytes: spent, unverified },
+    {
+      groups,
+      reclaimable_bytes: reclaimable,
+      hashed_bytes: spent,
+      unverified,
+      ...(stopReason ? { stopped_early: stopReason, not_attempted: toHash.length - done } : {}),
+    },
   )
 }
 

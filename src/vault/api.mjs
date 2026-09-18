@@ -19,7 +19,28 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     throw new Error('SHIELDFIVE_API_URL must be https (or localhost for development).')
   }
 
+  // A rate-limited request waits and retries (at most 3 times, honouring
+  // Retry-After and cancellation). A quota refusal does not: it will not clear
+  // by waiting, so it surfaces at once.
   async function call(method, path, body, signal) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await once(method, path, body, signal)
+      } catch (err) {
+        if (err?.code !== 'rate_limited' || attempt >= 3 || signal?.aborted) throw err
+        const waitMs = Math.min(60_000, (err.retryAfterSeconds ?? 15 * (attempt + 1)) * 1000)
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(resolve, waitMs)
+          signal?.addEventListener('abort', () => {
+            clearTimeout(t)
+            reject(signal.reason)
+          }, { once: true })
+        })
+      }
+    }
+  }
+
+  async function once(method, path, body, signal) {
     const url = new URL(`/api/agent/v1${path}`, origin)
     const timeout = AbortSignal.timeout(TIMEOUT_MS)
     let res
@@ -61,8 +82,18 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     if (res.status === 409) {
       throw new ToolError('conflict', 'That item changed since it was listed. List again and retry.')
     }
+    if (res.status === 429 && (code === 'transfer_limit' || code === 'egress_cap' || data.reason === 'egress_cap')) {
+      throw new ToolError(
+        'quota_exceeded',
+        'The vault owner’s download quota is used up for now (daily egress or monthly transfer). ' +
+          'Downloads resume when it resets; listing and organizing still work.',
+      )
+    }
     if (res.status === 429) {
-      throw new ToolError('rate_limited', 'ShieldFive is rate-limiting this connection. Wait a minute and retry.')
+      const err = new ToolError('rate_limited', 'ShieldFive is rate-limiting this connection. Wait a minute and retry.')
+      const retry = Number(res.headers.get('retry-after'))
+      if (Number.isFinite(retry) && retry > 0) err.retryAfterSeconds = retry
+      throw err
     }
     throw new ToolError(code, `ShieldFive refused the request (${res.status}). Nothing was changed.`)
   }
