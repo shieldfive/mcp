@@ -89,8 +89,14 @@ What this does not protect:
   assistant that means to its provider, like the rest of your conversation. The
   only way to avoid that is a local model.
 - **Revoking cannot un-read.** Anything the assistant has already read stays
-  read. A download link issued in the last 60 seconds before revocation still
-  works until it expires.
+  read. Nothing else survives it: file contents are streamed through
+  ShieldFive on each request, so there is no download link to outlive a
+  revocation.
+- **A connection is built from what the server shows your browser when you
+  create it.** Every later extension is checked against your own keys, so a
+  compromised server cannot widen a connection afterwards. At the moment of
+  creation, though, a compromised server could mislabel which folder you
+  picked.
 - **A copied connection string is a live key** to the folders it covers until
   it expires or you revoke it. Keep it in the keychain.
 - **Files can contain instructions aimed at the assistant.** This server marks
