@@ -33,18 +33,20 @@
     "access": "public"
   },
   "files": [
-    "src",
+    "CHANGELOG.md",
+    "LICENSE",
     "README.md",
     "SECURITY.md",
-    "CHANGELOG.md",
-    "LICENSE"
+    "server.json",
+    "src"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "demo": "node demo/run-demo.mjs"
+    "demo": "node demo/run-demo.mjs",
+    "build:mcpb": "node scripts/build-mcpb.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -52,5 +54,6 @@
     "@shieldfive/crypto": "1.0.0-rc.5",
     "libsodium-wrappers-sumo": "^0.8.4",
     "zod": "^3.25.0"
-  }
+  },
+  "mcpName": "io.github.shieldfive/mcp"
 }
