@@ -40,17 +40,21 @@ shipped the fix.
 ## Scope
 
 In scope: this package's own source — path containment, the walk, the mutating
-tools, the trash, the MCP surface, and the claims its README makes.
+tools, the trash, the vault tools and how they handle grant keys, names and
+decrypted content, the MCP surface, and the claims its README makes.
 
 Out of scope for this repository, with the right destination:
 
 - The ShieldFive vault, web application and API — `security@shieldfive.com`,
   same address, different codebase.
-- `@shieldfive/crypto` — its own repository. **This package does not depend on
-  it**, and a test asserts no `@shieldfive/*` or `@supabase/*` package is a
-  dependency.
-- `@modelcontextprotocol/sdk` and `zod`, this package's only two dependencies —
-  report upstream. A vulnerability in how *this* package uses them is in scope.
+- The agent-grant API and its enforcement (scope, expiry, revocation, the
+  audit log) — `shieldfive/web`, same address.
+- `@shieldfive/crypto` — its own repository. The vault half depends on it for
+  every cryptographic operation; a test asserts no module here implements a
+  cipher, HMAC or KDF of its own.
+- `@modelcontextprotocol/sdk`, `zod`, `libsodium-wrappers-sumo` and
+  `@napi-rs/keyring` — report upstream. A vulnerability in how *this* package
+  uses them is in scope.
 
 ## Threat model
 
@@ -76,8 +80,13 @@ has.
 | An assistant acting without the user seeing the plan | Mutating tools are inert without `confirm: true` and report what they would displace as well as what they would move | yes |
 | An oversized argument | `limit`, `max_files`, `max_files_hashed`, `paths`, path length and `new_name` are capped at the MCP schema and again in the handler; values echoed in a refusal are cut short | yes |
 | A cancelled request still changing files | Nothing starts once a request is cancelled; a trash batch stops between items and says what moved; the outcome is logged, because the SDK sends no response to a cancelled request | yes |
-| Credential exposure in this code | No credential is read or stored. `SHIELDFIVE_MCP_ROOTS` is the only environment variable read | yes |
-| Exfiltration over the network | No networking module imported, `fetch` never called; the transport is stdio | yes, for this package's source |
+| Credential exposure in this code | The only credential is an agent grant, read from `SHIELDFIVE_GRANT` or the OS keychain; never logged, never returned, never written to a file. The only environment variables read are `SHIELDFIVE_MCP_ROOTS`, `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`. No account password, service key or vault-key route is referenced anywhere | yes |
+| Network access | Only `vault/api.mjs` calls `fetch`, only to an https ShieldFive origin (or localhost for development). Local tools import nothing from the vault half; the transport is stdio | yes, for this package's source |
+| A grant opening more than its scope | Keys come only from the grant's own wraps (AAD-bound to grant, kind and object) and the folder chain below them. The server enforces scope on every request; local checks only produce clearer errors | yes, against an in-memory server with real ciphertext |
+| Revocation not taking effect | Every tool call re-fetches the grant and its listing; nothing that would outlive a revocation is cached | yes |
+| Decrypted data reaching disk | Vault modules import no filesystem module; plaintext exists only in memory for the duration of a call; decrypted names are cached in memory only | yes |
+| Prompt injection through names or file contents | Names are stripped of control and bidi characters; every result is marked as data; file contents are fenced with a random marker the file cannot close; every change needs a preview and its plan token; `vault_trash` is capped at 50 items; nothing is ever deleted and every change is undoable by the owner | yes, with an injection fixture |
+| A write the owner cannot read back | Names are re-sealed as v6 envelopes under the destination folder key and content keys re-wrapped under it; a name that failed to decrypt is never re-sealed | yes, the owner's keys re-open every write |
 | Credential exposure via a subprocess | No subprocess is spawned at all. Spawning `sf` would inherit `SF_PASSWORD` from the environment whether or not this code named it | yes |
 
 ## Known limits
@@ -139,6 +148,16 @@ has.
   import would evade it.
 - **File paths reach the model.** If a path is itself sensitive, do not give
   this server the root it sits in.
+- **Everything the vault tools return reaches the model, and so its provider.**
+  A grant limits which folders the assistant can open; it cannot limit what the
+  assistant's provider sees of what was opened. Revocation cannot un-read.
+- **A connection string is a bearer credential plus its key.** Held by anyone,
+  it gives that connection's access until it expires or is revoked. In the
+  keychain it is protected like any other stored secret; in `SHIELDFIVE_GRANT`
+  it is readable by anything that can read the process environment.
+- **Instruction-following is the model's, not this server's.** The fencing and
+  caps above bound the damage of an injected instruction to reversible changes
+  inside the granted folders; they do not make a model ignore text.
 - **Windows is untested.** No POSIX-only API is used and paths go through
   `node:path`, but nobody has run it there, and the cross-device tests run only
   on macOS.

@@ -5,6 +5,41 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — unreleased
+
+Vault tools. The server can now work on a ShieldFive vault through an **agent
+grant**: a connection the user creates in ShieldFive → Settings → AI
+assistants, limited to chosen folders and permissions, expiring (at most 90
+days), revocable, audited, and enforced by the server on every request.
+
+### Added
+
+- `vault_list_files`, `vault_search_files`, `vault_storage_stats`,
+  `vault_find_duplicates` and `vault_read_file` (read), and `vault_rename`,
+  `vault_move`, `vault_create_folder` and `vault_trash` (organize). They are
+  registered only when a connection is configured.
+- `npx @shieldfive/mcp login | logout | status`. The connection string is
+  stored in the OS keychain through `@napi-rs/keyring`, with `SHIELDFIVE_GRANT`
+  as the fallback for headless use.
+- Decryption of all three vault formats (post-quantum hybrid, AES-GCM v1 and
+  legacy v0) in memory, through `@shieldfive/crypto`. Names are decrypted on a
+  worker pool and cached in memory.
+- Progress notifications for name decryption and duplicate hashing.
+- Every vault result is marked as data rather than instructions. File contents
+  are fenced with a random marker the file cannot close.
+
+### Changed
+
+- **The security boundary is restated, not removed.** 0.2.0 held no credential
+  and made no network request. That still holds for the local tools, which
+  import nothing from the vault half, so a server with no connection behaves as
+  before. The vault half talks to one https origin with one scoped credential.
+  `test/boundary.test.mjs` asserts the new lines: network access only in
+  `vault/api.mjs`, no filesystem access in any vault module, no cipher outside
+  `@shieldfive/crypto`, no account credential anywhere.
+- A server started with a connection and no roots registers only the vault
+  tools.
+
 ## Unreleased
 
 ## 0.2.0 - 2026-09-16

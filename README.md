@@ -1,28 +1,150 @@
 # @shieldfive/mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server that lets an
-AI assistant manage files on your own machine: find duplicates by content, find
-what is large or stale, and move, rename or trash them.
+A [Model Context Protocol](https://modelcontextprotocol.io) server that lets
+Claude, ChatGPT, Cursor or a local model tidy two things:
 
-It holds no ShieldFive credential, makes no network request, and does not import
-`@shieldfive/crypto`. Those are not gaps to be filled in a later version. They
-are the security boundary, and the section below explains what they cost you.
+- **your ShieldFive vault**: find duplicates, see what takes the space, rename,
+  move, and move to the Bin. It works on the folders you grant, decrypts on your
+  machine, and every change can be undone;
+- **folders on your own disk**: the same jobs, with no network access at all.
+
+ShieldFive's servers never see a file name or a byte of content in the clear,
+and that holds with this server running too. Decryption happens inside this
+process, on your computer. What the assistant then does with what it reads is a
+separate question, answered under [Security model](#security-model).
+
+<!-- DEMO: a 40-second screen recording of a duplicate-cleanup session in Claude
+Desktop: "find duplicates in my Photos" → groups with sizes → "trash the copies"
+→ preview → confirm → the items appear in ShieldFive's Bin → one is undone from
+Settings → AI assistants. Record against a demo vault, never a real one. -->
+
+## Connect your vault in 60 seconds
+
+Requires Node 20 or newer.
+
+1. In ShieldFive, open **Settings → AI assistants → Connect an assistant**.
+   Choose the folders, *Read only* or *Read and organize*, and an expiry (1 hour
+   to 90 days). Copy the connection string. It is shown once.
+2. Store it in your system keychain:
+
+   ```sh
+   npx -y @shieldfive/mcp login
+   ```
+
+3. Add the server to your assistant. For Claude Desktop, add this to
+   `claude_desktop_config.json` (Cursor uses the same block in `~/.cursor/mcp.json`):
+
+   ```json
+   {
+     "mcpServers": {
+       "shieldfive": { "command": "npx", "args": ["-y", "@shieldfive/mcp"] }
+     }
+   }
+   ```
+
+   For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp`
+
+Restart the assistant and ask it to *find duplicates in my vault*.
+
+`npx @shieldfive/mcp status` shows which connection is configured and whether
+ShieldFive still accepts it. `npx @shieldfive/mcp logout` removes it from the
+keychain. Revoking it in ShieldFive is what cuts off access everywhere.
+
+For CI or a machine without a keychain, set `SHIELDFIVE_GRANT` to the connection
+string instead. Anything that can read the server's environment can then read
+the connection, so prefer the keychain wherever there is one.
+
+## Security model
+
+In plain terms:
+
+- **The connection string holds two things.** A *token* the server checks on
+  every request, and a *secret* that never leaves your machine. ShieldFive stores
+  only a hash of the token and has never seen the secret.
+- **The secret opens only the folders you chose.** When you create a connection,
+  your browser wraps those folders' keys under a key derived from the secret. It
+  wraps nothing else: not your vault root key, not your password, not your
+  post-quantum secret key. Subfolders open through the vault's normal folder-key
+  chain. A folder you did not choose cannot be opened with anything this server
+  holds.
+- **ShieldFive enforces scope, expiry and revocation on every request.** The
+  checks in this process only produce clearer errors; the server is the
+  boundary. Revoking a connection makes its next request fail. Nothing is
+  cached that would outlive a revocation.
+- **Decryption happens here, in memory.** No plaintext, key or ciphertext is
+  written to disk. The vault modules do not import the filesystem, and a test
+  asserts that.
+- **Nothing is deleted.** `vault_trash` moves items into a folder in your Bin
+  that belongs to the connection. There is no permanent-delete tool, and the
+  API a connection can reach has no delete route. Every rename, move and trash
+  appears in *Settings → AI assistants → Activity* with an Undo button.
+- **Every change is previewed first.** Mutating tools report a plan, and the
+  confirmed call must carry that plan's token and is refused if the items
+  changed in between.
+
+What this does not protect:
+
+- **Your AI provider sees what the assistant reads.** File names, and the
+  contents of files the assistant opens, go to the assistant, and for a cloud
+  assistant that means to its provider, like the rest of your conversation. The
+  only way to avoid that is a local model.
+- **Revoking cannot un-read.** Anything the assistant has already read stays
+  read. A download link issued in the last 60 seconds before revocation still
+  works until it expires.
+- **A copied connection string is a live key** to the folders it covers until
+  it expires or you revoke it. Keep it in the keychain.
+- **Files can contain instructions aimed at the assistant.** This server marks
+  every name and file content as data, fences file contents in a block the file
+  cannot close, caps `vault_trash` at 50 items per call, requires a preview for
+  every change, and keeps every change undoable. A model can still be talked
+  into a reversible mistake inside the folders you granted.
+
+The full design, including the threat model and the reasoning behind each
+decision, is in
+[`docs/mcp-grants-design.md`](https://github.com/shieldfive/web/blob/main/docs/mcp-grants-design.md).
+
+## Vault tools
+
+Registered only when a connection is configured. Everything below names things
+by id; paths are for people.
+
+| Tool | Needs | What it does |
+|---|---|---|
+| `vault_list_files` | read | files and folders in scope, with decrypted names, paths, sizes, dates |
+| `vault_search_files` | read | by name, path, extension, size or date, run locally over decrypted names |
+| `vault_storage_stats` | read | totals, the biggest folders and files, a breakdown by type |
+| `vault_find_duplicates` | read | same-size files decrypted in memory and compared by SHA-256; budgeted, and says when a result is a lower bound |
+| `vault_read_file` | read | text files as fenced, untrusted content (up to 1 M characters); other types return details only |
+| `vault_rename` | organize | rename a file or folder |
+| `vault_move` | organize | move into another folder in scope |
+| `vault_create_folder` | organize | create a folder in scope |
+| `vault_trash` | organize | up to 50 items into the connection's folder in the Bin |
+
+Limits a user may meet:
+
+- **Post-quantum files uploaded from a phone or the CLI** show as
+  `readable: false` until you next open ShieldFive on the web, which adds the key
+  the connection needs. Files uploaded in the web app are ready straight away.
+- **The first listing of a large vault takes a while.** Each name costs about
+  70 ms of Argon2id, spread over your CPU cores (about 20 seconds for 2,000
+  names on 8 cores). Names are cached in memory for the rest of the session.
+- **Items at the very top of a whole-vault connection** can be read and moved
+  into a folder, but not renamed in place, and nothing can be moved to the top.
+  Their names are sealed under your vault root key, which a connection never
+  holds.
+- **Uploads are not available yet.** The design allows them, but they ship
+  after the read and organize tools have been in use for a while.
+
+## Local files
+
+Every path after the package name is a **root**. The local tools can read and
+write inside those directories and nowhere else, and make no network request.
 
 ```sh
 npx @shieldfive/mcp ~/Documents ~/Downloads
 ```
 
-## Install
-
-Requires Node 20 or newer.
-
-```sh
-npm install -g @shieldfive/mcp
-```
-
-### Claude Desktop
-
-Add to `claude_desktop_config.json`:
+In `claude_desktop_config.json`:
 
 ```json
 {
@@ -35,10 +157,9 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-Every path after the package name is a **root**. The server can read and write
-inside those directories and nowhere else. There is no default root and no
-override flag — a server started with no roots will refuse every call and tell
-you so.
+With a connection configured and no roots, only the vault tools are registered.
+With roots and no connection, only the local tools are, and the server behaves
+exactly as 0.2.0 did. With both, you get both.
 
 `SHIELDFIVE_MCP_ROOTS` adds roots as well — the two are combined, not
 alternatives — as a list separated by your platform's path separator (`:` on
@@ -51,7 +172,7 @@ SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp
 Whitespace around a root is ignored. In a path given to a tool it is not: there,
 every character is part of the path.
 
-## See it work first
+### See it work first
 
 ```bash
 npm run demo
@@ -63,33 +184,19 @@ a two-year-old PDF — runs the read tools over them, previews a trash call, the
 confirms it and shows the manifest. It touches nothing outside that directory
 and removes it at the end (`--keep` leaves it in place).
 
-## What this cannot do
+## What the local tools cannot do
 
-**It cannot see your ShieldFive vault.** Not the file list, not the names, not
-the sizes. It will not tell you whether a local file is already backed up,
-because it has no way to know and it is not permitted to guess.
+**They cannot tell you whether a local file is already in your vault.** Matching
+a local name and size against a vault listing is how a tool deletes the only
+copy of something, and this server will not guess.
 
-That is a deliberate trade. The alternative was to authenticate with a full
-ShieldFive account JWT — the only credential the vault API accepts. That token
-also opens `/api/vault-key`, which returns your wrapped root key and an ML-KEM
-public key, and every content-download route, and **none of it can be scoped
-away**, because no scoped vault credential exists. A server holding that token
-would be *declining* to read your files rather than being *unable* to, with the
-difference resting on a client-side denylist and on nothing else on your machine
-reading the token file. A server holding no token cannot read them at all.
-
-When a scoped, metadata-only key exists, vault tools can be added behind it.
-Until then this is a local file manager that happens to be published by the
-people who make an encrypted vault.
-
-**It cannot stop the results from reaching your AI provider.** This server
-makes no network request, and that is worth exactly what it says and no more:
-everything it returns — paths, file names, sizes, dates, the digests it
-reports — goes back to the AI client that called it, and if that client is a
+**They cannot stop the results from reaching your AI provider.** The local
+tools make no network request, and that is worth exactly what it says and no
+more:
+everything they return — paths, file names, sizes, dates, the digests they
+report — goes back to the AI client that called it, and if that client is a
 cloud assistant, those names travel to the assistant's provider like the rest
-of your conversation. The server's silence is not the client's. Choose roots on
-that basis: point it at the folders you would be willing to describe out loud,
-and it will never see anything else.
+of your conversation. Choose roots on that basis.
 
 **It will never infer that two files are the same from their names and sizes.**
 Duplicate detection reads both files and compares a full SHA-256 of their
@@ -143,7 +250,7 @@ naming what changed. A token performs one change and expires after ten minutes.
 So a directory that grew, a destination that appeared, or a path that now points
 at a different file stops the call instead of silently widening it.
 
-## Tools
+## Local tools
 
 | Tool | Reads | Writes |
 |---|---|---|
@@ -290,7 +397,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 161 tests. The ones worth knowing about:
+`npm test` runs 180 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
@@ -310,18 +417,33 @@ renames, and a file created in that instant would be replaced.
   replaced.
 - A cancelled request moves nothing, and a trash batch cancelled midway says
   exactly what it moved.
-- No file under `src/` imports a networking module, calls `fetch`, spawns a
-  subprocess, or reads any environment variable other than
-  `SHIELDFIVE_MCP_ROOTS`.
-- A real MCP client over a real stdio transport sees nine tools and no vault
-  tool, including when the server is started through a symlink the way npm
-  installs it.
+- Only `src/vault/api.mjs` calls `fetch`, and only to an https ShieldFive
+  origin. No local-tool module imports anything from the vault half, no file
+  under `src/` spawns a subprocess, and the only environment variables read are
+  `SHIELDFIVE_MCP_ROOTS`, `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`.
+- The vault modules import no filesystem module, so decrypted data cannot be
+  written to disk. No module uses a cipher, HMAC or KDF of its own. All
+  cryptography comes from `@shieldfive/crypto`.
+- Against an in-memory ShieldFive that serves real ciphertext in all three vault
+  formats, over a real MCP client:
+  - files decrypt through the grant's keys only, and nothing outside the scope
+    is listed, read or even requested;
+  - a revoked or expired connection fails the very next call;
+  - renames and moves re-seal names and keys so the owner's own keys still
+    open them;
+  - the grant secret and token never appear in any request body or path.
+- A file whose contents tell the assistant to trash everything comes back
+  inside a fence it cannot close. Reading it issues only reads, and a 51-item
+  trash call is refused.
+- A real MCP client over a real stdio transport sees exactly the nine local
+  tools when no connection is configured, including when the server is started
+  through a symlink the way npm installs it.
 
-The network assertion has a limit worth stating: it proves nothing in `src/`
-reaches the network. It does not prove the dependency tree is network-free —
-`@modelcontextprotocol/sdk` ships HTTP transports for other people's servers,
-and claiming otherwise would be false. What closes that gap is that `server.mjs`
-imports the stdio transport and no HTTP one, which is also asserted.
+The network assertion has a limit worth stating: it proves what `src/` does,
+not what the dependency tree could do. `@modelcontextprotocol/sdk` ships HTTP
+transports for other people's servers. What closes that gap is that
+`server.mjs` imports the stdio transport and no HTTP one, which is also
+asserted.
 
 ## Limits
 

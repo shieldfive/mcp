@@ -1,16 +1,21 @@
 // The security boundary, asserted rather than described.
 //
-// README.md claims this server holds no credential, makes no network call and
-// does not import @shieldfive/crypto. A claim in a README is worth what the
-// test underneath it is worth, so these are the tests underneath it.
+// Since 0.3.0 the server has two halves with different boundaries:
 //
-// What this can and cannot prove is worth stating. It proves that no file under
-// src/ imports a network module, references a ShieldFive credential, or pulls
-// in the crypto package. It does NOT prove the dependency tree is network-free:
-// @modelcontextprotocol/sdk ships HTTP transports for other people's servers,
-// and asserting otherwise would be a false claim. What closes that gap is the
-// transport assertion below — src/ imports the stdio transport and nothing else
-// — plus the fact that nothing in src/ ever calls into an HTTP one.
+//   LOCAL tools touch only the directories passed at startup. They make no
+//   network call and import nothing from the vault half, so a server started
+//   without a grant behaves exactly as 0.2.0 did.
+//
+//   VAULT tools talk to one origin (ShieldFive's /api/agent/v1) with one
+//   credential: an agent grant the user created, scoped, expiring and
+//   revocable server-side. Decryption uses @shieldfive/crypto and happens only
+//   in memory; the vault modules cannot write to disk because they do not
+//   import the filesystem at all.
+//
+// What this cannot prove is stated where it matters: it proves what src/
+// imports and calls, not what the dependency tree could do. The MCP SDK ships
+// HTTP transports for other people's servers; the transport assertion below
+// is what shows this one is stdio only.
 
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
@@ -58,47 +63,50 @@ function importSpecifiers(code) {
   return found
 }
 
-describe('the server makes no network calls', () => {
+const VAULT_FILES = /[\\/](vault[\\/][^\\/]+|tools[\\/]vault)\.mjs$/
+const isVault = (file) => VAULT_FILES.test(file)
+
+describe('network access is confined to the vault API client', () => {
   it('imports no networking module anywhere in src/', async () => {
     const forbidden = new Set([
-      'node:http',
-      'node:https',
-      'node:net',
-      'node:tls',
-      'node:dgram',
-      'node:http2',
-      'node:dns',
-      'http',
-      'https',
-      'net',
-      'tls',
-      'dgram',
-      'dns',
-      'undici',
-      'node-fetch',
-      'axios',
-      'got',
-      'ws',
+      'node:http', 'node:https', 'node:net', 'node:tls', 'node:dgram', 'node:http2', 'node:dns',
+      'http', 'https', 'net', 'tls', 'dgram', 'dns', 'undici', 'node-fetch', 'axios', 'got', 'ws',
     ])
-
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
       for (const spec of importSpecifiers(code)) {
-        assert.ok(
-          !forbidden.has(spec),
-          `${file} imports ${spec}; this server must not reach the network`,
-        )
+        assert.ok(!forbidden.has(spec), `${file} imports ${spec}`)
       }
     }
   })
 
-  it('never calls fetch, XMLHttpRequest, WebSocket or EventSource', async () => {
+  it('calls fetch only in vault/api.mjs, and nothing else opens a connection', async () => {
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
-      assert.ok(!/\bfetch\s*\(/.test(code), `${file} calls fetch()`)
+      if (!file.endsWith(join('vault', 'api.mjs'))) {
+        assert.ok(!/\bfetch\b/.test(code), `${file} references fetch; only vault/api.mjs may`)
+      }
       assert.ok(!/\bXMLHttpRequest\b/.test(code), `${file} references XMLHttpRequest`)
       assert.ok(!/\bnew\s+WebSocket\b/.test(code), `${file} opens a WebSocket`)
       assert.ok(!/\bnew\s+EventSource\b/.test(code), `${file} opens an EventSource`)
+    }
+  })
+
+  it('refuses a non-https API origin other than localhost', async () => {
+    const { createVaultApi } = await import('../src/vault/api.mjs')
+    const credential = { token: new Uint8Array(32), secret: new Uint8Array(32), grantId: '00000000-0000-4000-8000-000000000000' }
+    assert.throws(() => createVaultApi({ credential, baseUrl: 'http://evil.example' }), /https/)
+    assert.doesNotThrow(() => createVaultApi({ credential, baseUrl: 'http://localhost:3000' }))
+  })
+
+  it('keeps the local tools free of every vault module', async () => {
+    for (const file of await sourceFiles()) {
+      if (isVault(file) || file.endsWith('server.mjs')) continue
+      const code = executable(await readFile(file, 'utf8'))
+      for (const spec of importSpecifiers(code)) {
+        assert.ok(!/vault/.test(spec), `${file} imports ${spec}; local tools must not reach the vault half`)
+        assert.ok(!spec.startsWith('@shieldfive/'), `${file} imports ${spec}`)
+      }
     }
   })
 
@@ -111,27 +119,20 @@ describe('the server makes no network calls', () => {
   })
 })
 
-describe('the server holds no ShieldFive credential', () => {
-  it('references no credential environment variable', async () => {
-    // SF_EMAIL / SF_PASSWORD are what @shieldfive/cli reads. Inheriting them
-    // through process.env would put the master password — one Argon2id call
-    // from the root key — in this process's address space.
+describe('the only credential is an agent grant', () => {
+  it('references no account credential, service key or vault key route', async () => {
+    // SF_EMAIL / SF_PASSWORD are what @shieldfive/cli reads: inheriting them
+    // would put the master password in this process. The grant is the only
+    // credential this server may hold.
     const forbidden = [
-      'SF_PASSWORD',
-      'SF_EMAIL',
-      'SF_TOTP_CODE',
-      'SUPABASE_SERVICE_ROLE_KEY',
-      'SUPABASE_ANON_KEY',
-      'Authorization',
-      'Bearer ',
-      'rkWrappedByUk',
-      'vault-key',
+      'SF_PASSWORD', 'SF_EMAIL', 'SF_TOTP_CODE', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_KEY',
+      'rkWrappedByUk', 'vault-key', 'master', 'recoveryKey',
     ]
-
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
-      for (const needle of forbidden) {
-        assert.ok(!code.includes(needle), `${file} references ${needle}`)
+      for (const needle of forbidden) assert.ok(!code.includes(needle), `${file} references ${needle}`)
+      if (!file.endsWith(join('vault', 'api.mjs'))) {
+        assert.ok(!/authorization|Bearer /i.test(code), `${file} builds an Authorization header; only vault/api.mjs may`)
       }
     }
   })
@@ -142,12 +143,10 @@ describe('the server holds no ShieldFive credential', () => {
       const code = executable(await readFile(file, 'utf8'))
       for (const m of code.matchAll(/(?:process\.)?env\.([A-Z0-9_]+)/g)) seen.add(m[1])
     }
-    assert.deepEqual([...seen].sort(), ['SHIELDFIVE_MCP_ROOTS'])
+    assert.deepEqual([...seen].sort(), ['SHIELDFIVE_API_URL', 'SHIELDFIVE_GRANT', 'SHIELDFIVE_MCP_ROOTS'])
   })
 
   it('never spawns a subprocess', async () => {
-    // Spawning `sf` would inherit the user's exported credentials whether or
-    // not this code names them, which is why the ban is on spawning at all.
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
       for (const needle of ['child_process', 'execSync', 'spawnSync', 'spawn(', 'exec(']) {
@@ -157,33 +156,39 @@ describe('the server holds no ShieldFive credential', () => {
   })
 })
 
-describe('the server does not import the crypto package', () => {
-  it('has no @shieldfive/crypto import in src/', async () => {
+describe('cryptography comes from @shieldfive/crypto, and plaintext stays in memory', () => {
+  it('imports @shieldfive/crypto only in the vault half, and no Supabase client anywhere', async () => {
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
-      assert.ok(!code.includes('@shieldfive/crypto'), `${file} imports @shieldfive/crypto`)
+      if (!isVault(file)) assert.ok(!code.includes('@shieldfive/crypto'), `${file} imports @shieldfive/crypto`)
       assert.ok(!code.includes('@supabase/'), `${file} imports a Supabase client`)
     }
   })
 
-  it('declares neither as a dependency', async () => {
-    const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies }
-    for (const name of Object.keys(deps)) {
-      assert.ok(!name.startsWith('@shieldfive/'), `${name} must not be a dependency`)
-      assert.ok(!name.startsWith('@supabase/'), `${name} must not be a dependency`)
+  it('implements no cipher of its own: node:crypto is used for hashing and randomness only', async () => {
+    for (const file of await sourceFiles()) {
+      const code = executable(await readFile(file, 'utf8'))
+      for (const keyed of ['createCipheriv', 'createDecipheriv', 'createHmac', 'generateKey', 'subtle', 'pbkdf2', 'scrypt', 'hkdf']) {
+        assert.ok(!code.includes(keyed), `${file} uses ${keyed}; primitives belong in @shieldfive/crypto`)
+      }
     }
   })
 
-  it('uses node:crypto only for content hashing', async () => {
-    // SHA-256 over file bytes to prove two files are identical is not
-    // cryptography in the sense § 1.2 of the handoff bans; it never touches a
-    // key. This test pins the usage so that stays true.
-    const scan = await readFile(join(SRC, 'scan.mjs'), 'utf8')
-    assert.ok(scan.includes("createHash('sha256')"))
-    for (const keyed of ['createCipheriv', 'createDecipheriv', 'createHmac', 'generateKey']) {
-      assert.ok(!scan.includes(keyed), `scan.mjs uses ${keyed}; hashing only, please`)
+  it('the vault modules cannot write to disk: they import no filesystem module', async () => {
+    for (const file of await sourceFiles()) {
+      if (!isVault(file)) continue
+      const code = executable(await readFile(file, 'utf8'))
+      for (const spec of importSpecifiers(code)) {
+        assert.ok(!/^(node:)?fs(\/promises)?$/.test(spec), `${file} imports ${spec}; decrypted data must stay in memory`)
+      }
     }
+  })
+
+  it('declares @shieldfive/crypto and no Supabase package', async () => {
+    const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies }
+    assert.ok(deps['@shieldfive/crypto'], '@shieldfive/crypto must be a dependency')
+    for (const name of Object.keys(deps)) assert.ok(!name.startsWith('@supabase/'), `${name} must not be a dependency`)
   })
 })
 
@@ -209,7 +214,7 @@ describe('the README does not drift from the code', () => {
     const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
     const server = await readFile(join(SRC, 'server.mjs'), 'utf8')
     const registered = [...server.matchAll(/^\s*name: '([a-z_]+)',$/gm)].map((m) => m[1])
-    assert.equal(registered.length, 9)
+    assert.equal(registered.length, 18)
     for (const name of registered) {
       assert.ok(readme.includes(`\`${name}\``), `README does not document ${name}`)
     }

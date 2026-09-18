@@ -133,7 +133,7 @@ describe('MCP protocol', () => {
 
   it('carries instructions telling the model not to claim a backup', async () => {
     const instructions = client.getInstructions()
-    assert.match(instructions, /no ShieldFive credential/i)
+    assert.match(instructions, /cannot see the ShieldFive vault/i)
     assert.match(instructions, /backed up/i)
   })
 

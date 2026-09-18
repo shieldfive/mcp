@@ -1,8 +1,8 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Model Context Protocol server for local file management. Finds duplicates, large files and stale files across the drives you allow it, and reorganises them. Holds no ShieldFive credential and makes no network calls.",
+  "description": "Model Context Protocol server for your ShieldFive vault and local files: find duplicates, reclaim space and reorganise, with decryption on your machine and scoped, revocable, audited access.",
   "license": "Apache-2.0",
   "author": "Cho Garcia <security@shieldfive.com>",
   "homepage": "https://github.com/shieldfive/mcp",
@@ -14,13 +14,17 @@
     "url": "https://github.com/shieldfive/mcp/issues"
   },
   "keywords": [
-    "shieldfive",
+    "claude",
+    "disk-space",
+    "duplicate-files",
+    "encryption",
+    "end-to-end-encryption",
+    "filesystem",
     "mcp",
     "model-context-protocol",
-    "claude",
-    "filesystem",
-    "duplicate-files",
-    "disk-space"
+    "post-quantum",
+    "shieldfive",
+    "vault"
   ],
   "bin": {
     "shieldfive-mcp": "src/server.mjs"
@@ -44,6 +48,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@napi-rs/keyring": "^2.1.0",
+    "@shieldfive/crypto": "1.0.0-rc.5",
+    "libsodium-wrappers-sumo": "^0.8.4",
     "zod": "^3.25.0"
   }
 }
