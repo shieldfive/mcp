@@ -1,13 +1,17 @@
-// `npx @shieldfive/mcp login | logout | status`
+// `npx @shieldfive/mcp login [--paste] | logout | status`
 //
-// login reads the connection string without echoing it, checks it against the
-// server (so a typo or a revoked grant is caught now, not in the middle of a
-// conversation), and stores it in the OS keychain. Nothing is written to a
-// file and the value is never printed.
+// login opens ShieldFive in the browser, where the owner chooses the scope and
+// clicks Authorize; the connection string comes back to this process over
+// 127.0.0.1 (connect.mjs). `login --paste` reads it from the terminal instead,
+// without echoing it. Either way it is checked against the server (so a
+// revoked grant is caught now, not in the middle of a conversation) and stored
+// in the OS keychain. Nothing is written to a file and the value is never
+// printed.
 
 import { parseConnectionString } from '@shieldfive/crypto/vault'
 
 import { createVaultApi, DEFAULT_API_URL } from './api.mjs'
+import { openBrowser, startConnectFlow } from './connect.mjs'
 import { deleteKeychain, loadGrantCredential, writeKeychain } from './credential.mjs'
 
 const out = (s) => process.stderr.write(`${s}\n`)
@@ -53,16 +57,47 @@ function readHidden(prompt) {
   })
 }
 
-async function describe(credential, env) {
-  const api = createVaultApi({ credential, baseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL })
-  const { grant } = await api.grant()
+export function describeGrant(grant) {
   const scope = grant.scopeAll ? 'whole vault' : `${grant.scopeFolderIds.length} folder(s)`
   return `connection ${grant.id.slice(0, 8)}…: ${grant.scopes.join(' + ')}, ${scope}, expires ${grant.expiresAt}`
 }
 
-export async function runCli(command, env = process.env) {
+async function describe(credential, env) {
+  const api = createVaultApi({ credential, baseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL })
+  const { grant } = await api.grant()
+  return describeGrant(grant)
+}
+
+async function authorizeInBrowser(env, open) {
+  const flow = await startConnectFlow({ baseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL, client: 'other' })
+  const opened = await open(flow.url)
+  out(
+    opened
+      ? 'Opened ShieldFive in your browser. Choose what the assistant may reach and click Authorize.'
+      : 'Open this link in your browser, choose what the assistant may reach and click Authorize:',
+  )
+  out(`  ${flow.url}`)
+  out('Waiting (up to 10 minutes; Ctrl+C to stop)…')
+  return flow.result
+}
+
+export async function runCli(command, env = process.env, args = [], { open = openBrowser } = {}) {
   if (command === 'login') {
-    const raw = await readHidden('Paste the ShieldFive connection string (input hidden): ')
+    let raw
+    if (args.includes('--paste')) {
+      raw = await readHidden('Paste the ShieldFive connection string (input hidden): ')
+    } else {
+      try {
+        raw = await authorizeInBrowser(env, open)
+      } catch (err) {
+        out(
+          err?.code === 'cancelled'
+            ? 'The request was denied in ShieldFive. Nothing was connected.'
+            : 'Nobody authorized the connection in time. Run the command again, or use --paste.',
+        )
+        return 1
+      }
+    }
     let credential
     try {
       credential = parseConnectionString(raw)

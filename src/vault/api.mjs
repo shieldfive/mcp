@@ -78,8 +78,8 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     if (res.status === 401) {
       throw new ToolError(
         'grant_invalid',
-        'This ShieldFive connection is expired or has been revoked. Create a new one in ' +
-          'ShieldFive → Settings → AI assistants and run `npx @shieldfive/mcp login`.',
+        'This ShieldFive connection is expired or has been revoked. Call vault_connect to ' +
+          'connect again (it opens ShieldFive in the browser to authorize).',
       )
     }
     if (res.status === 403 && code === 'missing_scope') {

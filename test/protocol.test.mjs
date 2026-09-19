@@ -33,6 +33,8 @@ before(async () => {
     new StdioClientTransport({
       command: process.execPath,
       args: [ENTRY, tree.path('vault')],
+      // Local-only, whatever the machine running the tests has in its keychain.
+      env: { ...process.env, SHIELDFIVE_GRANT: 'none' },
       stderr: 'pipe',
     }),
   )
@@ -44,7 +46,7 @@ after(async () => {
 })
 
 describe('MCP protocol', () => {
-  it('registers exactly the nine local tools', async () => {
+  it('registers exactly the nine local tools, plus vault_connect', async () => {
     const { tools } = await client.listTools()
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
@@ -58,17 +60,19 @@ describe('MCP protocol', () => {
         'rename_local',
         'storage_summary',
         'trash_local',
-      ],
+        'vault_connect',
+      ].sort(),
     )
   })
 
-  it('registers no vault tool', async () => {
-    // v1 holds no credential, so a vault tool would be one that cannot work.
-    // The discovery doc's rule is that such a tool is not registered at all
-    // rather than registered and thrown from.
+  it('registers no vault tool that needs a connection until there is one', async () => {
+    // Without a grant a vault tool is one that cannot work. The discovery
+    // doc's rule is that such a tool is not registered at all rather than
+    // registered and thrown from; vault_connect is the one that makes the
+    // others appear.
     const { tools } = await client.listTools()
     const vaultish = tools.filter((t) => /vault|upload|remote|cloud|sync/i.test(t.name))
-    assert.deepEqual(vaultish, [])
+    assert.deepEqual(vaultish.map((t) => t.name), ['vault_connect'])
   })
 
   it('marks the read-only tools read-only and closed-world', async () => {
@@ -77,9 +81,13 @@ describe('MCP protocol', () => {
     for (const name of ['list_local', 'find_duplicates', 'find_large_files', 'find_old_files', 'storage_summary']) {
       assert.equal(byName[name].annotations?.readOnlyHint, true, `${name} must be read-only`)
     }
-    for (const t of tools) {
+    // vault_connect is the one tool that reaches outside: it opens ShieldFive
+    // in the browser. It changes no file.
+    for (const t of tools.filter((t) => t.name !== 'vault_connect')) {
       assert.equal(t.annotations?.openWorldHint, false, `${t.name} must declare a closed world`)
     }
+    const connect = tools.find((t) => t.name === 'vault_connect')
+    assert.equal(connect.annotations?.destructiveHint, false)
   })
 
   it('finds the duplicate pair over the wire', async () => {
@@ -153,11 +161,12 @@ describe('MCP protocol', () => {
         new StdioClientTransport({
           command: process.execPath,
           args: [link, tree.path('vault')],
+          env: { ...process.env, SHIELDFIVE_GRANT: 'none' },
           stderr: 'pipe',
         }),
       )
       const { tools } = await viaLink.listTools()
-      assert.equal(tools.length, 9, 'the server must start when run through its bin symlink')
+      assert.equal(tools.length, 10, 'the server must start when run through its bin symlink')
     } finally {
       await viaLink.close().catch(() => {})
       await rm(linkDir, { recursive: true, force: true })
