@@ -5,6 +5,45 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 — 2026-09-20
+
+Connecting a vault no longer involves copying anything. Ask the assistant to
+tidy your vault, authorize it in the ShieldFive tab that opens, and carry on.
+
+### Added
+
+- `vault_connect`: opens ShieldFive in the user's browser, where the owner
+  chooses folders, permissions and expiry as before, and receives the new
+  connection over `127.0.0.1`. It is stored in the system keychain. The tool
+  reports back while the owner is still deciding and picks up the result on the
+  next call, because a tool call cannot wait ten minutes.
+- `npx @shieldfive/mcp login` now opens that same page; `login --paste` keeps
+  the old behaviour for a machine with no browser.
+- `SHIELDFIVE_GRANT=none` keeps one client local-only on a machine whose
+  keychain holds a connection for another.
+
+### Changed
+
+- The vault tools are registered as soon as a connection exists, including one
+  made mid-conversation, which the server announces with
+  `notifications/tools/list_changed`. Until then only `vault_connect` is
+  registered: a tool that cannot work is still not offered.
+- A revoked or expired connection now tells the assistant to call
+  `vault_connect`, instead of sending the user to the terminal.
+
+### Security
+
+- The hand-off is the only inbound socket in this package and the only
+  subprocess it starts. The listener binds a random loopback port, accepts one
+  POST to `/callback` with the loopback `Host`, no `Origin` other than
+  ShieldFive's and a 256-bit state compared in constant time, then closes. It
+  opens no connection of its own, and the browser is launched with a fixed
+  command and no shell.
+- The ShieldFive page builds the callback address from a port number and
+  accepts no callback URL, so a crafted link cannot deliver a connection
+  anywhere but the machine the browser runs on. The connection string is sent
+  in a form body, never in a URL, so it does not reach browser history.
+
 ## 0.3.0 — 2026-09-19
 
 Vault tools. The server can now work on a ShieldFive vault through an **agent

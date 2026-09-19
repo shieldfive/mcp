@@ -3,7 +3,7 @@
   "name": "io.github.shieldfive/mcp",
   "title": "ShieldFive",
   "description": "Tidy your E2E-encrypted ShieldFive vault and local folders. Decrypts locally; revocable access.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "repository": {
     "url": "https://github.com/shieldfive/mcp",
     "source": "github"
@@ -13,8 +13,10 @@
     {
       "registryType": "npm",
       "identifier": "@shieldfive/mcp",
-      "version": "0.3.0",
-      "transport": { "type": "stdio" },
+      "version": "0.4.0",
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "name": "SHIELDFIVE_GRANT",

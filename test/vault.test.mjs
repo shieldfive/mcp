@@ -67,7 +67,8 @@ describe('vault tools', () => {
   it('registers only the vault tools when no local roots are configured', async () => {
     const { tools } = await client.listTools()
     assert.ok(tools.every((t) => t.name.startsWith('vault_')), tools.map((t) => t.name).join())
-    assert.equal(tools.length, 9)
+    // The nine vault tools, plus vault_connect for reconnecting.
+    assert.equal(tools.length, 10)
     const trash = tools.find((t) => t.name === 'vault_trash')
     assert.equal(trash.annotations.destructiveHint, true)
     assert.equal(tools.find((t) => t.name === 'vault_read_file').annotations.readOnlyHint, true)

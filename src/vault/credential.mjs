@@ -50,9 +50,15 @@ export async function deleteKeychain() {
 /**
  * The configured grant, parsed, or null when none is configured. A malformed
  * value is an error with a fixed message; the value itself never appears.
+ *
+ * SHIELDFIVE_GRANT=none means "no vault here": the keychain is not read at all.
+ * That is how one client stays local-only on a machine where another client is
+ * connected, and how the tests avoid depending on the developer's keychain.
  */
 export async function loadGrantCredential(env = process.env, readStore = readKeychain) {
-  const raw = env.SHIELDFIVE_GRANT?.trim() || (await readStore())?.trim() || null
+  const configured = env.SHIELDFIVE_GRANT?.trim()
+  if (configured === 'none') return null
+  const raw = configured || (await readStore())?.trim() || null
   if (!raw) return null
   try {
     return { ...parseConnectionString(raw), source: env.SHIELDFIVE_GRANT ? 'env' : 'keychain' }
@@ -60,7 +66,7 @@ export async function loadGrantCredential(env = process.env, readStore = readKey
     if (err instanceof VaultCryptoError) {
       throw new Error(
         'The configured ShieldFive connection string is not valid. Create a new ' +
-          'connection in ShieldFive → Settings → AI assistants and run ' +
+          'connection in ShieldFive → Settings → AI assistants, or run ' +
           '`npx @shieldfive/mcp login` again.',
       )
     }

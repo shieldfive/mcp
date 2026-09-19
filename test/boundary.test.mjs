@@ -8,7 +8,11 @@
 //
 //   VAULT tools talk to one origin (ShieldFive's /api/agent/v1) with one
 //   credential: an agent grant the user created, scoped, expiring and
-//   revocable server-side. Decryption uses @shieldfive/crypto and happens only
+//   revocable server-side. The grant arrives either pasted or through the
+//   browser: vault/connect.mjs opens the default browser (a fixed command, no
+//   shell) and accepts ONE delivery on a listener bound to 127.0.0.1. That is
+//   the only inbound socket and the only subprocess, and it opens no
+//   connection of its own. Decryption uses @shieldfive/crypto and happens only
 //   in memory; the vault modules cannot write to disk because they do not
 //   import the filesystem at all.
 //
@@ -63,7 +67,8 @@ function importSpecifiers(code) {
   return found
 }
 
-const VAULT_FILES = /[\\/](vault[\\/][^\\/]+|tools[\\/]vault)\.mjs$/
+const VAULT_FILES = /[\\/](vault[\\/][^\\/]+|tools[\\/]vault[A-Za-z]*)\.mjs$/
+const CONNECT = join('vault', 'connect.mjs')
 const isVault = (file) => VAULT_FILES.test(file)
 
 describe('network access is confined to the vault API client', () => {
@@ -75,9 +80,21 @@ describe('network access is confined to the vault API client', () => {
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
       for (const spec of importSpecifiers(code)) {
+        if (file.endsWith(CONNECT) && spec === 'node:http') continue
         assert.ok(!forbidden.has(spec), `${file} imports ${spec}`)
       }
     }
+  })
+
+  it('listens only on 127.0.0.1, for the browser hand-off, and opens nothing itself', async () => {
+    const code = executable(await readFile(join(SRC, CONNECT), 'utf8'))
+    assert.deepEqual([...importSpecifiers(code)].filter((s) => s.includes('http')), ['node:http'])
+    assert.match(code, /import \{ createServer \} from 'node:http'/, 'only the server half of node:http')
+    assert.match(code, /\.listen\(0, '127\.0\.0\.1'/, 'the listener must bind loopback on a random port')
+    assert.equal([...code.matchAll(/\.listen\(/g)].length, 1)
+    assert.doesNotMatch(code, /\b(request|get)\(\s*['"`]?https?:/, 'the hand-off must not make requests')
+    assert.match(code, /req\.headers\.host !== `127\.0\.0\.1:\$\{port\}`/, 'Host must be checked (DNS rebinding)')
+    assert.match(code, /timingSafeEqual/, 'the state must be compared in constant time')
   })
 
   it('calls fetch only in vault/api.mjs, and nothing else opens a connection', async () => {
@@ -146,9 +163,18 @@ describe('the only credential is an agent grant', () => {
     assert.deepEqual([...seen].sort(), ['SHIELDFIVE_API_URL', 'SHIELDFIVE_GRANT', 'SHIELDFIVE_MCP_ROOTS'])
   })
 
-  it('never spawns a subprocess', async () => {
+  it('spawns nothing but the browser, with a fixed command and no shell', async () => {
     for (const file of await sourceFiles()) {
       const code = executable(await readFile(file, 'utf8'))
+      if (file.endsWith(CONNECT)) {
+        assert.match(code, /import \{ spawn \} from 'node:child_process'/)
+        for (const needle of ['execSync', 'spawnSync', 'exec(', 'execFile', 'shell:']) {
+          assert.ok(!code.includes(needle), `${file} references ${needle}`)
+        }
+        const commands = [...code.matchAll(/\[\s*'([a-z0-9-]+)',\s*\[/g)].map((m) => m[1]).sort()
+        assert.deepEqual(commands, ['open', 'rundll32', 'xdg-open'])
+        continue
+      }
       for (const needle of ['child_process', 'execSync', 'spawnSync', 'spawn(', 'exec(']) {
         assert.ok(!code.includes(needle), `${file} references ${needle}`)
       }
@@ -214,7 +240,7 @@ describe('the README does not drift from the code', () => {
     const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
     const server = await readFile(join(SRC, 'server.mjs'), 'utf8')
     const registered = [...server.matchAll(/^\s*name: '([a-z_]+)',$/gm)].map((m) => m[1])
-    assert.equal(registered.length, 18)
+    assert.equal(registered.length, 19)
     for (const name of registered) {
       assert.ok(readme.includes(`\`${name}\``), `README does not document ${name}`)
     }

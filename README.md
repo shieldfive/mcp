@@ -22,16 +22,7 @@ Settings → AI assistants. Record against a demo vault, never a real one. -->
 
 Requires Node 20 or newer.
 
-1. In ShieldFive, open **Settings → AI assistants → Connect an assistant**.
-   Choose the folders, *Read only* or *Read and organize*, and an expiry (1 hour
-   to 90 days). Copy the connection string. It is shown once.
-2. Store it in your system keychain:
-
-   ```sh
-   npx -y @shieldfive/mcp login
-   ```
-
-3. Add the server to your assistant. For Claude Desktop, add this to
+1. Add the server to your assistant. For Claude Desktop, add this to
    `claude_desktop_config.json` (Cursor uses the same block in `~/.cursor/mcp.json`):
 
    ```json
@@ -44,7 +35,18 @@ Requires Node 20 or newer.
 
    For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp`
 
-Restart the assistant and ask it to *find duplicates in my vault*.
+2. Restart the assistant and ask it to *tidy up my ShieldFive vault*. It calls
+   `vault_connect`, which opens ShieldFive in your browser.
+3. In that tab, choose the folders, *Read only* or *Read and organize*, and an
+   expiry (1 hour to 90 days), then click **Authorize**.
+
+That is the whole setup: the connection is delivered straight to the server
+running on your computer — over `127.0.0.1`, never through ShieldFive — and
+stored in your system keychain. Nothing is copied by hand.
+
+To connect before you start a conversation, run `npx -y @shieldfive/mcp login`:
+same browser page, same result. `login --paste` takes a connection string you
+copied from Settings → AI assistants instead, for a machine with no browser.
 
 `npx @shieldfive/mcp status` shows which connection is configured and whether
 ShieldFive still accepts it. `npx @shieldfive/mcp logout` removes it from the
@@ -52,7 +54,23 @@ keychain. Revoking it in ShieldFive is what cuts off access everywhere.
 
 For CI or a machine without a keychain, set `SHIELDFIVE_GRANT` to the connection
 string instead. Anything that can read the server's environment can then read
-the connection, so prefer the keychain wherever there is one.
+the connection, so prefer the keychain wherever there is one. Setting
+`SHIELDFIVE_GRANT=none` keeps one client local-only on a machine whose keychain
+holds a connection for another.
+
+### How the browser hand-off is kept honest
+
+- The page never accepts a callback URL, only a port number, and builds
+  `http://127.0.0.1:<port>/callback` itself. A crafted link cannot send your
+  connection anywhere but your own machine.
+- The listener accepts exactly one delivery: a POST to `/callback`, `Host`
+  exactly the loopback address (so a rebound DNS name is refused), no `Origin`
+  but ShieldFive's, and a 256-bit state compared in constant time. Then it
+  closes.
+- The connection string travels in a form body, never in a URL, so it does not
+  land in browser history.
+- The listener exists only while a connection is being authorized, and for at
+  most 10 minutes.
 
 ## Security model
 
@@ -111,11 +129,14 @@ decision, is in
 
 ## Vault tools
 
-Registered only when a connection is configured. Everything below names things
-by id; paths are for people.
+`vault_connect` is always available. The rest are registered once a connection
+exists — connecting mid-conversation announces them with
+`notifications/tools/list_changed`. Everything below names things by id; paths
+are for people.
 
 | Tool | Needs | What it does |
 |---|---|---|
+| `vault_connect` | — | opens ShieldFive in the browser to authorize a connection, and stores it in the keychain |
 | `vault_list_files` | read | files and folders in scope, with decrypted names, paths, sizes, dates |
 | `vault_search_files` | read | by name, path, extension, size or date, run locally over decrypted names |
 | `vault_storage_stats` | read | totals, the biggest folders and files, a breakdown by type |
@@ -403,7 +424,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 183 tests. The ones worth knowing about:
+`npm test` runs 204 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
@@ -424,9 +445,14 @@ renames, and a file created in that instant would be replaced.
 - A cancelled request moves nothing, and a trash batch cancelled midway says
   exactly what it moved.
 - Only `src/vault/api.mjs` calls `fetch`, and only to an https ShieldFive
-  origin. No local-tool module imports anything from the vault half, no file
-  under `src/` spawns a subprocess, and the only environment variables read are
-  `SHIELDFIVE_MCP_ROOTS`, `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`.
+  origin. No local-tool module imports anything from the vault half, and the
+  only environment variables read are `SHIELDFIVE_MCP_ROOTS`,
+  `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`.
+- The browser hand-off is the one inbound socket and the one subprocess in the
+  package: `src/vault/connect.mjs` binds a random port on `127.0.0.1`, opens no
+  connection of its own, and launches the browser with a fixed command and no
+  shell. A delivery from another origin, with another state, to another `Host`,
+  by another method, or after the first one, is refused.
 - The vault modules import no filesystem module, so decrypted data cannot be
   written to disk. No module uses a cipher, HMAC or KDF of its own. All
   cryptography comes from `@shieldfive/crypto`.

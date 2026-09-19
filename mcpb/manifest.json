@@ -2,22 +2,37 @@
   "manifest_version": "0.3",
   "name": "shieldfive",
   "display_name": "ShieldFive",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Tidy your encrypted ShieldFive vault and local folders: find duplicates, free space, reorganise.",
   "long_description": "Works on the ShieldFive vault folders you grant in ShieldFive → Settings → AI assistants, and on local folders you choose. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
-  "author": { "name": "ShieldFive", "email": "security@shieldfive.com", "url": "https://shieldfive.com" },
+  "author": {
+    "name": "ShieldFive",
+    "email": "security@shieldfive.com",
+    "url": "https://shieldfive.com"
+  },
   "homepage": "https://github.com/shieldfive/mcp",
   "documentation": "https://github.com/shieldfive/mcp#readme",
   "support": "https://github.com/shieldfive/mcp/issues",
   "license": "Apache-2.0",
-  "keywords": ["encryption", "storage", "duplicates", "files", "privacy"],
+  "keywords": [
+    "encryption",
+    "storage",
+    "duplicates",
+    "files",
+    "privacy"
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/src/server.mjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/src/server.mjs", "${user_config.local_directories}"],
-      "env": { "SHIELDFIVE_GRANT": "${user_config.connection_string}" }
+      "args": [
+        "${__dirname}/server/src/server.mjs",
+        "${user_config.local_directories}"
+      ],
+      "env": {
+        "SHIELDFIVE_GRANT": "${user_config.connection_string}"
+      }
     }
   },
   "user_config": {
@@ -38,27 +53,87 @@
     }
   },
   "tools": [
-    { "name": "vault_list_files", "description": "List vault files in scope with decrypted names" },
-    { "name": "vault_search_files", "description": "Search vault files by name, path, type, size or date" },
-    { "name": "vault_storage_stats", "description": "Vault usage, biggest folders and files" },
-    { "name": "vault_find_duplicates", "description": "Find byte-identical vault files" },
-    { "name": "vault_read_file", "description": "Read a vault text file as untrusted data" },
-    { "name": "vault_rename", "description": "Rename a vault file or folder (undoable)" },
-    { "name": "vault_move", "description": "Move a vault file or folder (undoable)" },
-    { "name": "vault_create_folder", "description": "Create a vault folder" },
-    { "name": "vault_trash", "description": "Move up to 50 items to the Bin; nothing is deleted" },
-    { "name": "list_local", "description": "List local files" },
-    { "name": "find_duplicates", "description": "Find byte-identical local files" },
-    { "name": "find_large_files", "description": "Find large local files" },
-    { "name": "find_old_files", "description": "Find stale local files" },
-    { "name": "storage_summary", "description": "Summarise local storage" },
-    { "name": "move_local", "description": "Move a local file or folder" },
-    { "name": "rename_local", "description": "Rename a local file or folder" },
-    { "name": "create_local_folder", "description": "Create a local folder" },
-    { "name": "trash_local", "description": "Move local files to this server's trash" }
+    {
+      "name": "vault_list_files",
+      "description": "List vault files in scope with decrypted names"
+    },
+    {
+      "name": "vault_search_files",
+      "description": "Search vault files by name, path, type, size or date"
+    },
+    {
+      "name": "vault_storage_stats",
+      "description": "Vault usage, biggest folders and files"
+    },
+    {
+      "name": "vault_find_duplicates",
+      "description": "Find byte-identical vault files"
+    },
+    {
+      "name": "vault_read_file",
+      "description": "Read a vault text file as untrusted data"
+    },
+    {
+      "name": "vault_rename",
+      "description": "Rename a vault file or folder (undoable)"
+    },
+    {
+      "name": "vault_move",
+      "description": "Move a vault file or folder (undoable)"
+    },
+    {
+      "name": "vault_create_folder",
+      "description": "Create a vault folder"
+    },
+    {
+      "name": "vault_trash",
+      "description": "Move up to 50 items to the Bin; nothing is deleted"
+    },
+    {
+      "name": "list_local",
+      "description": "List local files"
+    },
+    {
+      "name": "find_duplicates",
+      "description": "Find byte-identical local files"
+    },
+    {
+      "name": "find_large_files",
+      "description": "Find large local files"
+    },
+    {
+      "name": "find_old_files",
+      "description": "Find stale local files"
+    },
+    {
+      "name": "storage_summary",
+      "description": "Summarise local storage"
+    },
+    {
+      "name": "move_local",
+      "description": "Move a local file or folder"
+    },
+    {
+      "name": "rename_local",
+      "description": "Rename a local file or folder"
+    },
+    {
+      "name": "create_local_folder",
+      "description": "Create a local folder"
+    },
+    {
+      "name": "trash_local",
+      "description": "Move local files to this server's trash"
+    }
   ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
-    "runtimes": { "node": ">=20.0.0" }
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
   }
 }
