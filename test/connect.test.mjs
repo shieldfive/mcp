@@ -59,7 +59,8 @@ describe('the authorization URL', () => {
     try {
       const url = new URL(flow.url)
       assert.equal(url.origin, BASE)
-      assert.equal(url.pathname, '/files/settings/agents')
+      assert.equal(url.pathname, '/files')
+      assert.equal(url.searchParams.get('settings'), 'agents')
       assert.match(url.searchParams.get('connect'), /^[A-Za-z0-9_-]{43}$/)
       assert.equal(url.searchParams.get('port'), String(flow.port))
       assert.equal(url.searchParams.get('client'), 'cursor')
@@ -171,7 +172,7 @@ describe('opening the browser', () => {
         unref() {},
       }
     }
-    const url = 'https://shieldfive.com/files/settings/agents?connect=x&port=1'
+    const url = 'https://shieldfive.com/files?settings=agents&connect=x&port=1'
     for (const platform of ['darwin', 'win32', 'linux']) {
       assert.equal(await openBrowser(url, platform, spawnStub), true)
     }
