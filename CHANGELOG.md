@@ -5,6 +5,22 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 — 2026-09-20
+
+### Added
+
+- The server suggests a name for the connection, taken from the AI client's own
+  name, so ShieldFive's settings list says "Claude Code" rather than "Other MCP
+  client". `login` suggests "ShieldFive MCP (command line)". The suggestion is
+  printable ASCII, collapsed and capped at 48 characters; the page sanitizes it
+  again and the owner can change it before authorizing.
+
+### Fixed
+
+- 0.4.0 opened `/files/settings/agents`, which is not a route: ShieldFive's
+  settings are an overlay on `/files`. The authorize page now opens correctly.
+  (Also in the 0.4.0 npm release, which shipped after that fix.)
+
 ## 0.4.0 — 2026-09-20
 
 Connecting a vault no longer involves copying anything. Ask the assistant to
@@ -19,9 +35,6 @@ tidy your vault, authorize it in the ShieldFive tab that opens, and carry on.
   next call, because a tool call cannot wait ten minutes.
 - `npx @shieldfive/mcp login` now opens that same page; `login --paste` keeps
   the old behaviour for a machine with no browser.
-- The server suggests a name for the connection, taken from the AI client's
-  own name, so the settings list says "Claude Code" rather than "Other MCP
-  client". The page sanitizes it and the owner can change it.
 - `SHIELDFIVE_GRANT=none` keeps one client local-only on a machine whose
   keychain holds a connection for another.
 
