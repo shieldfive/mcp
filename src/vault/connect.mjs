@@ -2,7 +2,7 @@
 //
 // This process listens on a random port on 127.0.0.1 and opens
 //
-//   https://shieldfive.com/files/settings/agents?connect=<state>&port=<port>&client=<hint>
+//   https://shieldfive.com/files?settings=agents&connect=<state>&port=<port>&client=<hint>
 //
 // The owner signs in, unlocks, chooses the scope and clicks Authorize. The page
 // creates the grant in the browser as it always does, then submits a form to
@@ -204,7 +204,11 @@ export async function startConnectFlow({
     server.closeAllConnections?.()
   }
 
-  const url = new URL('/files/settings/agents', origin)
+  // Settings is an overlay on /files opened with ?settings=<section>; there is
+  // no page at /files/settings/agents (opening one is how this first shipped,
+  // and it 404s).
+  const url = new URL('/files', origin)
+  url.searchParams.set('settings', 'agents')
   url.searchParams.set('connect', state)
   url.searchParams.set('port', String(port))
   url.searchParams.set('client', CLIENT_HINTS.includes(client) ? client : 'other')
