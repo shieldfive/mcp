@@ -11,7 +11,7 @@ import { parseConnectionString } from '@shieldfive/crypto/vault'
 
 import { ToolError } from '../roots.mjs'
 import { describeGrant } from '../vault/cli.mjs'
-import { clientHintFor, openBrowser, startConnectFlow } from '../vault/connect.mjs'
+import { clientHintFor, connectLabel, openBrowser, startConnectFlow } from '../vault/connect.mjs'
 import { writeKeychain } from '../vault/credential.mjs'
 
 export const CONNECT_WAIT_MS = 45_000
@@ -56,9 +56,11 @@ export async function vaultConnect(ctx, args) {
 
   let flow = root.connectFlow
   if (!flow) {
+    const name = root.clientName?.()
     const started = await startConnectFlow({
       baseUrl: root.apiBaseUrl,
-      client: clientHintFor(root.clientName?.()),
+      client: clientHintFor(name),
+      label: connectLabel(name),
     })
     flow = { ...started, opened: await (root.openBrowser ?? openBrowser)(started.url) }
     // Kept until a call consumes its outcome: a user who authorizes after the

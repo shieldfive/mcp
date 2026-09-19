@@ -69,7 +69,11 @@ async function describe(credential, env) {
 }
 
 async function authorizeInBrowser(env, open) {
-  const flow = await startConnectFlow({ baseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL, client: 'other' })
+  const flow = await startConnectFlow({
+    baseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL,
+    client: 'other',
+    label: 'ShieldFive MCP (command line)',
+  })
   const opened = await open(flow.url)
   out(
     opened
