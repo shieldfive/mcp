@@ -103,9 +103,21 @@ export class ConnectError extends Error {
  * Start listening and build the authorization URL. `result` resolves with the
  * raw connection string, or rejects with a ConnectError (cancelled, timeout).
  */
+/** A suggested connection name: printable ASCII, short, or nothing at all. */
+export function connectLabel(name) {
+  const out = String(name ?? '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48)
+    .trim()
+  return out.length > 1 ? out : null
+}
+
 export async function startConnectFlow({
   baseUrl,
   client = 'other',
+  label = null,
   timeoutMs = CONNECT_TIMEOUT_MS,
   onDelivered,
 } = {}) {
@@ -212,6 +224,9 @@ export async function startConnectFlow({
   url.searchParams.set('connect', state)
   url.searchParams.set('port', String(port))
   url.searchParams.set('client', CLIENT_HINTS.includes(client) ? client : 'other')
+  // A suggestion only: the page sanitizes it again and the owner can edit it.
+  const suggested = connectLabel(label)
+  if (suggested) url.searchParams.set('label', suggested)
 
   return {
     url: url.toString(),

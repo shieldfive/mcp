@@ -19,6 +19,9 @@ tidy your vault, authorize it in the ShieldFive tab that opens, and carry on.
   next call, because a tool call cannot wait ten minutes.
 - `npx @shieldfive/mcp login` now opens that same page; `login --paste` keeps
   the old behaviour for a machine with no browser.
+- The server suggests a name for the connection, taken from the AI client's
+  own name, so the settings list says "Claude Code" rather than "Other MCP
+  client". The page sanitizes it and the owner can change it.
 - `SHIELDFIVE_GRANT=none` keeps one client local-only on a machine whose
   keychain holds a connection for another.
 

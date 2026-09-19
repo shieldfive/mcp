@@ -197,6 +197,23 @@ describe('opening the browser', () => {
   })
 })
 
+describe('the suggested label', () => {
+  it('is sent when it survives sanitizing, and left out when it does not', async () => {
+    const withLabel = await started({ label: 'Claude\u202e Code\n' })
+    assert.equal(new URL(withLabel.url).searchParams.get('label'), 'Claude Code')
+    withLabel.cancel()
+    const without = await started({ label: '\u0007' })
+    assert.equal(new URL(without.url).searchParams.get('label'), null)
+    without.cancel()
+  })
+
+  it('caps the length', async () => {
+    const flow = await started({ label: 'x'.repeat(200) })
+    assert.equal(new URL(flow.url).searchParams.get('label').length, 48)
+    flow.cancel()
+  })
+})
+
 describe('client hints', () => {
   it('maps the clients people actually use', () => {
     assert.equal(clientHintFor('claude-ai'), 'claude-desktop')
