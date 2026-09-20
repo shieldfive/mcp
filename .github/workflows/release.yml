@@ -1,0 +1,111 @@
+name: release
+
+# Publishes @shieldfive/mcp to npm WITH provenance when a version tag (vX.Y.Z)
+# is pushed, and attaches the Claude Desktop bundle to the GitHub release.
+#
+# Why this exists: `npm publish` from a laptop needs an interactive browser
+# approval for 2FA, so every release waited on a human at a terminal. An
+# automation token in CI publishes without that, and provenance links the
+# tarball to this exact commit and run — a stronger claim than a laptop upload.
+#
+# ── ONE-TIME SETUP ───────────────────────────────────────────────────────────
+#   1. npmjs.com → Access Tokens → Generate New Token → "Automation"
+#      (automation tokens bypass 2FA, which CI needs), or a Granular token
+#      scoped to @shieldfive with read+write on @shieldfive/mcp.
+#   2. gh secret set NPM_TOKEN --repo shieldfive/mcp
+#
+# ── RELEASE FLOW ─────────────────────────────────────────────────────────────
+#   merge the release PR → push an annotated tag vX.Y.Z at the merge commit.
+#   The MCP registry listing is still published separately with mcp-publisher.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag to publish (e.g. v0.4.1)'
+        required: true
+
+permissions:
+  contents: write # the release asset
+  id-token: write # REQUIRED for npm provenance (OIDC)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Resolve version and verify it matches the tag
+        id: ver
+        env:
+          # Untrusted input (the pushed tag name or dispatch ref) goes through
+          # env and is never interpolated into the shell: ref names permit
+          # `$()`, backticks, `;`, `|` and `&`, which would be a command
+          # injection sink in the one job holding NPM_TOKEN and id-token:write.
+          TAG_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${TAG_REF#v}"
+          semver_re='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+          if [[ ! "$PKG_VERSION" =~ $semver_re ]]; then
+            echo "::error::package.json version is not a clean semver string"
+            exit 1
+          fi
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag (=$TAG_VERSION) does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already on npm
+        id: check
+        run: |
+          if npm view "@shieldfive/mcp@${{ steps.ver.outputs.version }}" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::@shieldfive/mcp@${{ steps.ver.outputs.version }} is already published — skipping publish."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm with provenance
+        if: steps.check.outputs.already == 'false'
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          if [[ "$VER" == *-* ]]; then
+            CHANNEL="$(echo "$VER" | sed -E 's/.*-([a-zA-Z]+).*/\1/')"
+          else
+            CHANNEL="latest"
+          fi
+          npm publish --provenance --access public --tag "$CHANNEL"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The bundle is built from the tag, so what people install from the
+      # release page is the code that was published, not whatever main holds.
+      - name: Build the Claude Desktop bundle
+        run: npm run build:mcpb
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          if gh release view "$TAG_REF" >/dev/null 2>&1; then
+            gh release upload "$TAG_REF" dist/shieldfive.mcpb --clobber
+          else
+            gh release create "$TAG_REF" dist/shieldfive.mcpb --title "${TAG_REF#v}" --generate-notes
+          fi
