@@ -1,6 +1,6 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Model Context Protocol server for your ShieldFive vault and local files: find duplicates, reclaim space and reorganise, with decryption on your machine and scoped, revocable, audited access.",
   "license": "Apache-2.0",
