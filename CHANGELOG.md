@@ -5,6 +5,36 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 — 2026-09-21
+
+Uploads. An assistant can now move a file from this machine INTO the vault —
+the direction people actually want when a laptop or a phone backup is full.
+
+### Added
+
+- `vault_upload`: encrypts a file from the allowed local folders here, uploads
+  the ciphertext, then **reads it back out of the vault, decrypts it and
+  compares the SHA-256 to the file on disk** before reporting success. "The
+  server returned 200" is not evidence that a file is safe to delete from
+  someone's laptop; a verified round trip is.
+- It never removes the local original. After verification it tells the model it
+  may offer `trash_local`, which asks for its own confirmation — an upload the
+  user approved is not also approval to delete from their machine.
+- Needs the new `write` scope and the per-connection upload allowance the owner
+  sets when authorizing. Both are enforced by ShieldFive on every request.
+
+### Security
+
+- The file is encrypted to the owner's **public** ML-KEM key, which is checked
+  against the fingerprint pinned in this machine's own connection string. A
+  server that serves a different key gets nothing uploaded.
+- The presigned storage URL is the one request that does not go to ShieldFive,
+  and the vault credential is never sent with it. The test fixture fails the
+  upload outright if an Authorization header appears on it.
+- The upload proof is built by `@shieldfive/crypto` (`buildUploadProofV3`, new
+  in 1.0.0-rc.6), so this server and the web app produce the same frame the
+  server verifies, rather than two hand-written implementations.
+
 ## 0.4.1 — 2026-09-20
 
 ### Added

@@ -3,7 +3,7 @@
   "name": "io.github.shieldfive/mcp",
   "title": "ShieldFive",
   "description": "Tidy your E2E-encrypted ShieldFive vault and local folders. Decrypts locally; revocable access.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "repository": {
     "url": "https://github.com/shieldfive/mcp",
     "source": "github"
@@ -13,14 +13,14 @@
     {
       "registryType": "npm",
       "identifier": "@shieldfive/mcp",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "SHIELDFIVE_GRANT",
-          "description": "Connection string from ShieldFive → Settings → AI assistants. Optional: `npx @shieldfive/mcp login` stores it in the OS keychain instead.",
+          "description": "Connection string from ShieldFive \u2192 Settings \u2192 AI assistants. Optional: `npx @shieldfive/mcp login` stores it in the OS keychain instead.",
           "isRequired": false,
           "isSecret": true
         },

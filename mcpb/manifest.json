@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "shieldfive",
   "display_name": "ShieldFive",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Tidy your encrypted ShieldFive vault and local folders: find duplicates, free space, reorganise.",
-  "long_description": "Works on the ShieldFive vault folders you grant in ShieldFive → Settings → AI assistants, and on local folders you choose. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
+  "long_description": "Works on the ShieldFive vault folders you grant in ShieldFive \u2192 Settings \u2192 AI assistants, and on local folders you choose. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
   "author": {
     "name": "ShieldFive",
     "email": "security@shieldfive.com",
@@ -39,7 +39,7 @@
     "connection_string": {
       "type": "string",
       "title": "ShieldFive connection string",
-      "description": "From ShieldFive → Settings → AI assistants → Connect an assistant. Leave empty to use only local folders.",
+      "description": "From ShieldFive \u2192 Settings \u2192 AI assistants \u2192 Connect an assistant. Leave empty to use only local folders.",
       "sensitive": true,
       "required": false
     },

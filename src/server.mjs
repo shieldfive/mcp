@@ -47,6 +47,8 @@ import {
   vaultTrash,
 } from './tools/vault.mjs'
 import { vaultConnect } from './tools/vaultConnect.mjs'
+import { vaultUpload } from './tools/vaultUpload.mjs'
+import { createLocalFileGateway } from './localSource.mjs'
 import { createVaultApi, DEFAULT_API_URL } from './vault/api.mjs'
 import { runCli } from './vault/cli.mjs'
 import { loadGrantCredential } from './vault/credential.mjs'
@@ -381,6 +383,26 @@ export const VAULT_TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     handler: vaultTrash,
   },
+  {
+    name: 'vault_upload',
+    title: 'Upload a local file to the vault',
+    description:
+      'Encrypt a file from the allowed local folders on this machine and put it in a ShieldFive folder ' +
+      'this connection covers — the way to free up space on a laptop or phone backup without handing the ' +
+      'files to anyone. Encryption happens here; ShieldFive only ever receives ciphertext. The upload is ' +
+      'then READ BACK and compared byte for byte, and only then may you offer to move the local original ' +
+      'to the local trash with trash_local (which asks for its own confirmation). Needs "write". ' +
+      'Without confirm: true only reports the plan; show it to the user before confirming.',
+    inputSchema: {
+      path: z.string().min(1).max(LIMITS.pathChars).describe('The local file to upload.'),
+      destination_folder_id: idArg.describe('The vault folder it goes into.'),
+      name: z.string().max(255).optional().describe('Defaults to the local file name.'),
+      content_type: z.string().max(127).optional(),
+      ...confirmArgs,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    handler: vaultUpload,
+  },
 ]
 
 for (const tool of VAULT_TOOLS) tool.requiresVault = true
@@ -544,6 +566,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const now = () => Date.now()
   const ctx = {
     roots,
+    // The one door to the local filesystem the vault half may use, and only
+    // for reading a file it is uploading (src/localSource.mjs).
+    localFiles: roots.length ? null : null,
     noRootsMessage: NO_ROOTS_MESSAGE,
     now,
     plans: createPlanStore({ now }),
@@ -552,6 +577,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     envGrant: Boolean(env.SHIELDFIVE_GRANT?.trim()),
     makeVault: (credential) => createVaultContext(env, { credential }),
   }
+  ctx.localFiles = roots.length ? createLocalFileGateway(ctx) : null
   const server = createServer(ctx)
   await server.connect(new StdioServerTransport())
   log('ready on stdio.')
