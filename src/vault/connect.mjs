@@ -2,7 +2,7 @@
 //
 // This process listens on a random port on 127.0.0.1 and opens
 //
-//   https://shieldfive.com/files?settings=agents&connect=<state>&port=<port>&client=<hint>
+//   https://shieldfive.com/files?settings=agents&connect=<state>&port=<port>&client=<hint>&exp=<unix s>
 //
 // The owner signs in, unlocks, chooses the scope and clicks Authorize. The page
 // creates the grant in the browser as it always does, then submits a form to
@@ -202,6 +202,9 @@ export async function startConnectFlow({
   })
   port = server.address().port
 
+  // The deadline goes in the link too, so the page can stop offering to create
+  // a connection once nobody here is waiting for it.
+  const deadline = Math.floor((Date.now() + timeoutMs) / 1000)
   const timer = setTimeout(() => {
     if (done) return
     done = true
@@ -227,6 +230,7 @@ export async function startConnectFlow({
   // A suggestion only: the page sanitizes it again and the owner can edit it.
   const suggested = connectLabel(label)
   if (suggested) url.searchParams.set('label', suggested)
+  url.searchParams.set('exp', String(deadline))
 
   return {
     url: url.toString(),
