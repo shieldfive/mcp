@@ -5,6 +5,16 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.1 — 2026-09-21
+
+### Fixed
+
+- Authorizing a connection after `login` (or `vault_connect`) had stopped
+  waiting created a live connection that nobody received, and the browser
+  showed "This site can't be reached". The link now carries the listener's
+  deadline (`exp`), and ShieldFive stops offering to create the connection
+  shortly before it, saying to run the command again.
+
 ## 0.6.0 — 2026-09-21
 
 ### Added

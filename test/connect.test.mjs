@@ -70,6 +70,18 @@ describe('the authorization URL', () => {
     }
   })
 
+  it('carries the listener’s deadline, so the page can refuse a request nobody waits for', async () => {
+    const before = Math.floor(Date.now() / 1000)
+    const flow = await started({ timeoutMs: 60_000 })
+    try {
+      const exp = Number(new URL(flow.url).searchParams.get('exp'))
+      assert.match(String(exp), /^[0-9]{10}$/)
+      assert.ok(exp >= before + 59 && exp <= before + 61, `exp ${exp} should be ~60s out`)
+    } finally {
+      flow.cancel()
+    }
+  })
+
   it('never passes an unknown client hint through', async () => {
     const flow = await started({ client: '../evil' })
     try {

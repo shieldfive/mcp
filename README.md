@@ -431,7 +431,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 224 tests. The ones worth knowing about:
+`npm test` runs 225 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
