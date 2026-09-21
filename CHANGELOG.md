@@ -5,6 +5,17 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1 — 2026-09-21
+
+### Fixed
+
+- `vault_upload` failed at the last step on every real upload: finalize
+  answered 400 because the request did not carry the SHA-1 of the uploaded
+  ciphertext, which ShieldFive uses as the one-part upload manifest (the app's
+  own uploads always send it). Nothing was stored as a finished file and
+  nothing was charged, but no upload could complete. Found by the first
+  production smoke test; the test double now enforces the same rule.
+
 ## 0.5.0 — 2026-09-21
 
 Uploads. An assistant can now move a file from this machine INTO the vault —

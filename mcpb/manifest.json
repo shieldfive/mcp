@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "shieldfive",
   "display_name": "ShieldFive",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Tidy your encrypted ShieldFive vault and local folders: find duplicates, free space, reorganise.",
   "long_description": "Works on the ShieldFive vault folders you grant in ShieldFive \u2192 Settings \u2192 AI assistants, and on local folders you choose. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
   "author": {
