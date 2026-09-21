@@ -5,6 +5,27 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 — unreleased
+
+### Added
+
+- `vault_move_in`: the "free up space" move in one approval. Up to 50 local
+  files go into a vault folder; each is encrypted here, uploaded, **read back
+  and compared byte for byte**, and only then is its original moved to this
+  server's local trash, with a manifest naming the vault file that holds its
+  copy. Nothing is deleted — the space comes back when the user empties that
+  trash. The first failure stops the batch and leaves that file and every file
+  after it where they are; a file changed after it was read is not trashed.
+  The preview refuses a batch that cannot fit the connection's upload
+  allowance, and two files that would share a name in the folder.
+
+### Fixed
+
+- An uploaded copy that would not decrypt at all surfaced as a decryption
+  error; it is now `verify_failed`, which says the copy is in the vault but not
+  verified and the original must stay.
+- README said uploads were not available yet.
+
 ## 0.5.1 — 2026-09-21
 
 ### Fixed

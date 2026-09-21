@@ -147,6 +147,7 @@ are for people.
 | `vault_create_folder` | organize | create a folder in scope |
 | `vault_upload` | write | encrypt a local file here and put it in the vault, then read it back and compare before you are told it is safe to remove the original |
 | `vault_trash` | organize | up to 50 items into the connection's folder in the Bin |
+| `vault_move_in` | write | free up space: up to 50 local files uploaded and verified one by one, each original moved to the local trash only after its copy reads back identical — one approval, nothing deleted |
 
 Limits a user may meet:
 
@@ -160,8 +161,13 @@ Limits a user may meet:
   into a folder, but not renamed in place, and nothing can be moved to the top.
   Their names are sealed under your vault root key, which a connection never
   holds.
-- **Uploads are not available yet.** The design allows them, but they ship
-  after the read and organize tools have been in use for a while.
+- **Uploads need a connection that may add files** ("Read, organize and add
+  files" when you authorize it) and an upload allowance, which you choose then.
+  Each file is at most 512 MB. Uploads and moves read local files, so the
+  server needs roots as well as a connection.
+- **Moving files in frees no space by itself.** `vault_move_in` puts each
+  verified original in `.shieldfive-mcp-trash`, with a manifest naming its vault
+  copy; the space comes back when you empty that directory.
 
 ## Local files
 
@@ -425,7 +431,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 215 tests. The ones worth knowing about:
+`npm test` runs 224 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
