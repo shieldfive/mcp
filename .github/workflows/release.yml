@@ -9,10 +9,13 @@ name: release
 # tarball to this exact commit and run — a stronger claim than a laptop upload.
 #
 # ── ONE-TIME SETUP ───────────────────────────────────────────────────────────
-#   1. npmjs.com → Access Tokens → Generate New Token → "Automation"
-#      (automation tokens bypass 2FA, which CI needs), or a Granular token
-#      scoped to @shieldfive with read+write on @shieldfive/mcp.
-#   2. gh secret set NPM_TOKEN --repo shieldfive/mcp
+#   Trusted publishing (OIDC), not a token. npm now requires 2FA for direct
+#   publishes even with an automation token (EOTP in CI, 2026-09-21), and its
+#   replacement is for the registry to trust THIS workflow directly:
+#     npmjs.com → @shieldfive/mcp → Settings → Trusted Publisher →
+#       GitHub Actions · shieldfive/mcp · workflow release.yml
+#   No secret is involved. id-token: write (below) is what npm verifies, and
+#   provenance is produced as part of the same exchange.
 #
 # ── RELEASE FLOW ─────────────────────────────────────────────────────────────
 #   merge the release PR → push an annotated tag vX.Y.Z at the merge commit.
@@ -43,9 +46,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: 'https://registry.npmjs.org'
+          # No registry-url: that writes an .npmrc auth line expecting a token,
+          # and an empty one gets in the way of the OIDC exchange.
           cache: npm
 
+      # Trusted publishing needs npm 11.5.1 or newer; Node 20 ships npm 10.
+      - run: npm install -g npm@^11.5.1
       - run: npm ci
       - run: npm test
 
@@ -90,9 +96,9 @@ jobs:
           else
             CHANNEL="latest"
           fi
+          # OIDC: npm exchanges this job's GitHub identity for a short-lived
+          # publish credential. Nothing long-lived exists to leak.
           npm publish --provenance --access public --tag "$CHANNEL"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # The bundle is built from the tag, so what people install from the
       # release page is the code that was published, not whatever main holds.
