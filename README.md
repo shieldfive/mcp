@@ -145,6 +145,7 @@ are for people.
 | `vault_rename` | organize | rename a file or folder |
 | `vault_move` | organize | move into another folder in scope |
 | `vault_create_folder` | organize | create a folder in scope |
+| `vault_upload` | write | encrypt a local file here and put it in the vault, then read it back and compare before you are told it is safe to remove the original |
 | `vault_trash` | organize | up to 50 items into the connection's folder in the Bin |
 
 Limits a user may meet:
@@ -424,7 +425,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 206 tests. The ones worth knowing about:
+`npm test` runs 215 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.

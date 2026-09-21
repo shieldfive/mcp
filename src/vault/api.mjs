@@ -95,6 +95,15 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
     if (res.status === 409) {
       throw new ToolError('conflict', 'That item changed since it was listed. List again and retry.')
     }
+    if (res.status === 429 && code === 'write_budget_exhausted') {
+      // Not a rate limit: waiting will not clear it. Only the vault owner can
+      // raise it, by creating a connection with a larger upload allowance.
+      throw new ToolError(
+        'write_budget_exhausted',
+        'This connection has used its upload allowance. Nothing was uploaded. The vault owner ' +
+          'sets the allowance when authorizing a connection in ShieldFive → Settings → AI assistants.',
+      )
+    }
     if (res.status === 429 && (code === 'transfer_limit' || code === 'egress_cap' || data.reason === 'egress_cap')) {
       throw new ToolError(
         'quota_exceeded',
@@ -183,6 +192,48 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
       return out
     },
     patchFile: (id, body, signal) => call('PATCH', `/files/${id}`, body, signal),
+    /** Reserve an upload: scope, destination and byte budget are checked server-side. */
+    startUpload: (body, signal) => call('POST', '/files', body, signal),
+    finalizeUpload: (id, body, signal) =>
+      call('POST', `/files/${id}/finalize`, body, signal),
+    /**
+     * PUT the ciphertext at the presigned URL the reserve step returned.
+     *
+     * This is the one request that does not go to ShieldFive: the URL is
+     * storage's, signed for exactly this object key, this method and a short
+     * window. The bearer token is NOT sent with it — a storage URL must never
+     * carry the vault credential.
+     */
+    async putCiphertext(uploadUrl, bytes, contentType, signal) {
+      const target = new URL(uploadUrl)
+      if (target.protocol !== 'https:') {
+        throw new ToolError('network_error', 'Storage returned an insecure upload URL.')
+      }
+      let res
+      try {
+        res = await fetchImpl(target, {
+          method: 'PUT',
+          headers: {
+            'content-type': contentType,
+            'content-length': String(bytes.length),
+          },
+          body: bytes,
+          signal,
+        })
+      } catch (err) {
+        if (signal?.aborted) throw err
+        throw new ToolError(
+          'network_error',
+          'The encrypted file could not be sent to storage. Nothing was changed.',
+        )
+      }
+      if (!res.ok) {
+        throw new ToolError(
+          'upload_failed',
+          `Storage refused the upload (${res.status}). Nothing was changed.`,
+        )
+      }
+    },
     patchFolder: (id, body, signal) => call('PATCH', `/folders/${id}`, body, signal),
     createFolder: (body, signal) => call('POST', '/folders', body, signal),
     trash: (items, signal) => call('POST', '/trash', { items }, signal),

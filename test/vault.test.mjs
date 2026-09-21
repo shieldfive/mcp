@@ -18,11 +18,14 @@ import { after, beforeEach, describe, it } from 'node:test'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
+import { createLocalFileGateway } from '../src/localSource.mjs'
 import { createPlanStore } from '../src/plans.mjs'
 import { createServer, createVaultContext } from '../src/server.mjs'
+import { resolveRoots } from '../src/roots.mjs'
 import { createVaultApi } from '../src/vault/api.mjs'
 import { loadGrantCredential } from '../src/vault/credential.mjs'
 import { createNamePool } from '../src/vault/namePool.mjs'
+import { makeTree } from './helpers.mjs'
 import { buildVault } from './vaultFixture.mjs'
 
 const names = createNamePool({ size: 4 })
@@ -31,17 +34,21 @@ after(() => names.close())
 let vault
 let client
 
-async function connect(opts) {
+let tree
+async function connect(opts = {}) {
   vault = await buildVault(opts)
+  // Local roots, for the upload tool: a real directory this server may read.
+  tree = opts.tree ? await makeTree(opts.tree) : null
   const credential = await loadGrantCredential({ SHIELDFIVE_GRANT: vault.connectionString }, async () => null)
   const api = createVaultApi({ credential, baseUrl: 'https://shieldfive.test', fetchImpl: vault.fetchImpl })
   const ctx = {
-    roots: [],
+    roots: tree ? await resolveRoots([tree.path('.')]).then((r) => r.roots) : [],
     noRootsMessage: 'no roots',
     now: () => Date.now(),
     plans: createPlanStore(),
     vault: await createVaultContext({}, { credential, api, names }),
   }
+  ctx.localFiles = ctx.roots.length ? createLocalFileGateway(ctx) : null
   const server = createServer(ctx)
   const [a, b] = InMemoryTransport.createLinkedPair()
   client = new Client({ name: 'test', version: '1.0.0' })
@@ -67,8 +74,8 @@ describe('vault tools', () => {
   it('registers only the vault tools when no local roots are configured', async () => {
     const { tools } = await client.listTools()
     assert.ok(tools.every((t) => t.name.startsWith('vault_')), tools.map((t) => t.name).join())
-    // The nine vault tools, plus vault_connect for reconnecting.
-    assert.equal(tools.length, 10)
+    // The ten vault tools (upload included), plus vault_connect.
+    assert.equal(tools.length, 11)
     const trash = tools.find((t) => t.name === 'vault_trash')
     assert.equal(trash.annotations.destructiveHint, true)
     assert.equal(tools.find((t) => t.name === 'vault_read_file').annotations.readOnlyHint, true)
@@ -271,4 +278,143 @@ describe('vault permissions', () => {
       (err) => !err.message.includes('secret-looking-value'),
     )
   })
+})
+
+describe('vault_upload', () => {
+  const WRITE = ['read', 'organize', 'write']
+  const CONTENT = 'holiday photos and tax receipts\n'.repeat(200)
+
+  const withFile = () =>
+    connect({
+      scopes: WRITE,
+      tree: { 'photos/holiday.txt': CONTENT, 'photos/second.txt': 'x'.repeat(50) },
+    })
+
+  it('encrypts here, uploads, and verifies by reading it back', async () => {
+    await withFile()
+    const preview = await call('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.equal(preview.error, null, preview.error)
+    assert.match(preview.texts[0], /Would encrypt/)
+    assert.match(preview.texts[0], /local file is NOT removed/i)
+
+    const done = await call('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+      confirm: true,
+      plan_token: preview.data.plan_token,
+    })
+    assert.equal(done.error, null, done.error)
+    assert.equal(done.data.verified, true)
+    assert.equal(done.data.bytes, CONTENT.length)
+
+    // ShieldFive received ciphertext, never the plaintext.
+    const stored = vault.state.uploadedBlobs.get(done.data.uploaded)
+    assert.ok(stored.length > 0)
+    assert.ok(!stored.includes(Buffer.from('holiday photos')))
+
+    // The OWNER's own keys open the name — not just this connection's.
+    assert.equal(await vault.ownerName(done.data.uploaded), 'holiday.txt')
+
+    // And reading it back through the vault returns exactly what was on disk.
+    const read = await call('vault_read_file', { file_id: done.data.uploaded })
+    assert.ok(read.texts.some((t) => t.includes('holiday photos and tax receipts')))
+
+    // The local file is still there: removing it is a separate, confirmed step.
+    const local = await call('list_local', { path: tree.path('photos') })
+    assert.ok(JSON.stringify(local.data).includes('holiday.txt'))
+  })
+
+  it('refuses a connection without the write scope', async () => {
+    await connect({ tree: { 'a.txt': 'hello' } })
+    const r = await call('vault_upload', {
+      path: tree.path('a.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.match(r.error ?? '', /cannot add files/)
+  })
+
+  it('refuses a destination outside the scope, and the Bin', async () => {
+    await withFile()
+    for (const dest of [vault.ids.private, vault.ids.bin, vault.ids.trash]) {
+      const r = await call('vault_upload', {
+        path: tree.path('photos/holiday.txt'),
+        destination_folder_id: dest,
+      })
+      assert.ok(r.error, `expected a refusal for ${dest}`)
+    }
+  })
+
+  it('refuses a path outside the allowed roots', async () => {
+    await withFile()
+    const r = await call('vault_upload', {
+      path: '/etc/hosts',
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.ok(r.error)
+  })
+
+  it('refuses a confirmation whose file changed since the plan', async () => {
+    await withFile()
+    const preview = await call('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(tree.path('photos/holiday.txt'), 'something else entirely')
+    const r = await call('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+      confirm: true,
+      plan_token: preview.data.plan_token,
+    })
+    assert.ok(r.error)
+    assert.equal(vault.state.uploadedBlobs.size, 0)
+  })
+
+  it('stops when the owner’s upload budget is spent', async () => {
+    await withFile()
+    vault.state.writeBudget = 10
+    const r = await confirmed('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.match(r.error ?? '', /upload allowance|budget/i)
+  })
+
+  it('refuses to encrypt to a public key that is not the one pinned in the connection', async () => {
+    await withFile()
+    const { generateMlKemKeypair } = await import('@shieldfive/crypto/pq-hybrid-v1')
+    vault.state.servedPublicKey = generateMlKemKeypair().publicKey
+    const r = await confirmed('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.match(r.error ?? '', /does not match/)
+    assert.equal(vault.state.uploadedBlobs.size, 0)
+  })
+
+  it('never sends the vault credential to storage', async () => {
+    await withFile()
+    const r = await confirmed('vault_upload', {
+      path: tree.path('photos/second.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    // The fixture fails the PUT outright if an Authorization header appears.
+    assert.equal(r.error, null, r.error)
+  })
+
+  it('reports a storage failure without claiming anything was stored', async () => {
+    await withFile()
+    vault.state.storageRejects = true
+    const r = await confirmed('vault_upload', {
+      path: tree.path('photos/holiday.txt'),
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.ok(r.error)
+    assert.match(r.error, /storage|upload/i)
+  })
+
 })

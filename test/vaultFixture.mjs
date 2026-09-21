@@ -5,6 +5,7 @@
 
 import { randomBytes, randomUUID, webcrypto } from 'node:crypto'
 
+import { bytesToBase64 } from '@shieldfive/crypto'
 import { encryptBytes as encryptV1 } from '@shieldfive/crypto/aes-gcm-v1'
 import { encryptBytes as encryptPq, generateMlKemKeypair } from '@shieldfive/crypto/pq-hybrid-v1'
 import {
@@ -140,7 +141,17 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     requests: [],
     audit: [],
+    // Upload: the budget the owner set, what has been spent, the ciphertext
+    // storage received, and the switches the tests flip.
+    writeBudget: 10_000_000,
+    writeUsed: 0,
+    uploadedBlobs: new Map(),
+    proofs: [],
+    finalizeFails: false,
+    storageRejects: false,
+    servedPublicKey: null,
   }
+  const pendingUploads = new Map()
   const grant = { id: grantId, scopes, scopeAll: whole, scopeFolderIds: whole ? [] : roots, trashFolderId: scopes.includes('organize') ? ids.trash : null }
 
   // Scope, as agent_grant_folder_scope decides it.
@@ -161,6 +172,16 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
   async function fetchImpl(url, init = {}) {
     const u = new URL(url)
     if (u.hostname === 'blob.test') {
+      // The presigned PUT: storage, not ShieldFive. The vault bearer token must
+      // never be sent here, and the fixture asserts that by rejecting it.
+      if (u.pathname.startsWith('/put/')) {
+        if (init.headers?.authorization) {
+          return new Response('credential leaked to storage', { status: 400 })
+        }
+        if (state.storageRejects) return new Response('nope', { status: 500 })
+        state.uploadedBlobs.set(u.pathname.slice(5), Buffer.from(init.body))
+        return new Response('', { status: 200 })
+      }
       const id = u.pathname.slice(1)
       return new Response(blobs.get(id))
     }
@@ -178,7 +199,20 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     const organize = () => (grant.scopes.includes('organize') ? null : json(403, { code: 'missing_scope', scope: 'organize' }))
     let m
     if (path === '/grant') {
-      return json(200, { grant: { ...grant, expiresAt: state.expiresAt, pkFingerprint: credential.publicKeyFingerprint }, keys: grantKeys })
+      return json(200, {
+        grant: {
+          ...grant, expiresAt: state.expiresAt, pkFingerprint: credential.publicKeyFingerprint,
+          // Served to a write connection only, as the real route does; the
+          // client checks it against the fingerprint it already holds.
+          ...(grant.scopes.includes('write')
+            ? {
+                mlKemPublicKey: bytesToBase64(state.servedPublicKey ?? mlKem.publicKey),
+                writeBudget: { bytes: state.writeBudget, usedBytes: state.writeUsed },
+              }
+            : {}),
+        },
+        keys: grantKeys,
+      })
     }
     if (path === '/folders' && method === 'GET') {
       const rows = [...folders.values()].filter((f) => folderScope(f.id)).map((f) => ({
@@ -188,7 +222,7 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
       }))
       return json(200, { folders: rows, next: null })
     }
-    if (path === '/files') {
+    if (path === '/files' && method === 'GET') {
       const rows = [...files.values()].filter((f) => fileScope(f)).map((f) => ({
         id: f.id, folderId: f.folderId, name: f.name, contentType: f.contentType, size: f.size,
         ciphertextSize: f.ciphertextSize, createdAt: f.createdAt, updatedAt: f.updatedAt,
@@ -239,6 +273,43 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
       folders.set(body.id, { id: body.id, parentId: body.parentId, name: body.name, fkWrapped: body.fkWrapped, fkIv: body.fkIv, isBin: false, updatedAt: new Date().toISOString() })
       state.audit.push({ action: 'create_folder', id: body.id })
       return json(201, { ok: true, id: body.id, auditId: state.audit.length })
+    }
+    const write = () => (grant.scopes.includes('write') ? null : json(403, { code: 'missing_scope', scope: 'write' }))
+    if (path === '/files' && method === 'POST') {
+      const denied = write(); if (denied) return denied
+      if (folderScope(body.folderId) !== 'scope') return json(404, { code: 'not_found' })
+      if (state.writeUsed + body.sizeBytes > state.writeBudget) {
+        return json(429, { code: 'write_budget_exhausted' })
+      }
+      pendingUploads.set(body.id, { ...body, proofKey: 'ab'.repeat(32) })
+      return json(200, {
+        fileId: body.id,
+        uploadUrl: `https://blob.test/put/${body.id}`,
+        expiresInSeconds: 900,
+        proofKey: 'ab'.repeat(32),
+        budgetRemainingBytes: state.writeBudget - state.writeUsed - body.sizeBytes,
+      })
+    }
+    if ((m = /^\/files\/([^/]+)\/finalize$/.exec(path))) {
+      const denied = write(); if (denied) return denied
+      const started = pendingUploads.get(m[1])
+      if (!started) return json(404, { code: 'not_found' })
+      if (!state.uploadedBlobs.has(m[1])) return json(400, { code: 'finalize_failed' })
+      if (state.finalizeFails) return json(400, { code: 'finalize_failed' })
+      state.proofs.push({ id: m[1], proof: body.proof })
+      files.set(m[1], {
+        id: m[1], folderId: started.folderId, name: started.name,
+        contentType: started.contentType ?? 'application/octet-stream',
+        size: started.sizeBytes, ciphertextSize: started.sizeBytes,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        cipherVersion: started.cipherVersion, cipherChunkSize: null, cipherNoncePrefix: null,
+        cskWrapped: started.cskWrapped, cskIv: started.cskIv,
+        pqkFkWrapped: started.pqkFkWrapped, pqkFkIv: started.pqkFkIv,
+      })
+      blobs.set(m[1], state.uploadedBlobs.get(m[1]))
+      state.writeUsed += started.sizeBytes
+      state.audit.push({ action: 'upload_file', id: m[1] })
+      return json(200, { fileId: m[1], sizeBytes: started.sizeBytes, auditId: state.audit.length, status: 'stored' })
     }
     if (path === '/trash' && method === 'POST') {
       const denied = organize(); if (denied) return denied
