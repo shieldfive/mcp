@@ -2,13 +2,13 @@
   "manifest_version": "0.3",
   "name": "shieldfive",
   "display_name": "ShieldFive",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Move files off your computer into your encrypted ShieldFive vault, verified first; find duplicates and tidy.",
   "long_description": "Moves files from the local folders you choose into the ShieldFive vault folders you grant (ShieldFive \u2192 Settings \u2192 AI assistants): each file is encrypted here, uploaded, read back and matched byte for byte before its original goes to a local trash folder \u2014 nothing is deleted. Also finds duplicates, shows what takes the space and reorganises, in the vault and on disk. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
   "author": {
     "name": "ShieldFive",
     "email": "security@shieldfive.com",
-    "url": "https://shieldfive.com"
+    "url": "https://github.com/shieldfive"
   },
   "homepage": "https://github.com/shieldfive/mcp",
   "documentation": "https://github.com/shieldfive/mcp#readme",
