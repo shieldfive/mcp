@@ -1,8 +1,8 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
-  "description": "Model Context Protocol server for your ShieldFive vault and local files: find duplicates, reclaim space and reorganise, with decryption on your machine and scoped, revocable, audited access.",
+  "description": "MCP server for your end-to-end encrypted ShieldFive vault: move files off your computer into it (each copy verified before the original moves, nothing deleted), find duplicates, reclaim space and reorganise. Decrypts on your machine; access is scoped, expiring, revocable and audited.",
   "license": "Apache-2.0",
   "author": "Cho Garcia <security@shieldfive.com>",
   "homepage": "https://github.com/shieldfive/mcp",

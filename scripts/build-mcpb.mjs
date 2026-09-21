@@ -18,6 +18,7 @@ if (manifest.version !== pkg.version) {
 rmSync(stage, { recursive: true, force: true })
 mkdirSync(join(stage, 'server'), { recursive: true })
 writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2))
+if (manifest.icon) cpSync(join(root, 'mcpb', manifest.icon), join(stage, manifest.icon))
 cpSync(join(root, 'src'), join(stage, 'server', 'src'), { recursive: true })
 for (const f of ['package.json', 'package-lock.json', 'README.md', 'LICENSE', 'SECURITY.md']) {
   cpSync(join(root, f), join(stage, 'server', f))

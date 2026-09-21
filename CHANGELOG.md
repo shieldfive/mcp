@@ -5,6 +5,22 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.2 — 2026-09-21
+
+### Changed
+
+- Package, registry and Claude Desktop bundle descriptions and the README
+  introduction now lead with moving files into the vault, and no longer
+  describe the server as tidy-only.
+
+### Added
+
+- A Privacy Policy section in the README (what the server sends, what it never
+  sends, what ShieldFive keeps), and `privacy_policies` plus an icon in the
+  Claude Desktop bundle manifest, as the Claude extension directory requires.
+- `glama.json` and a Dockerfile, so directory inspectors can start the server
+  and list its tools.
+
 ## 0.6.1 — 2026-09-21
 
 ### Fixed

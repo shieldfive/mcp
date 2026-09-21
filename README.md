@@ -1,12 +1,16 @@
 # @shieldfive/mcp
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that lets
-Claude, ChatGPT, Cursor or a local model tidy two things:
+Claude, ChatGPT, Cursor or a local model work with two things:
 
-- **your ShieldFive vault**: find duplicates, see what takes the space, rename,
-  move, and move to the Bin. It works on the folders you grant, decrypts on your
-  machine, and every change can be undone;
-- **folders on your own disk**: the same jobs, with no network access at all.
+- **your ShieldFive vault**, end-to-end encrypted: **move files off your
+  computer into it** — each one encrypted here, uploaded, read back and matched
+  byte for byte before its original is moved to a local trash folder, never
+  deleted — and find duplicates, see what takes the space, rename, move and
+  move to the Bin. It works on the folders you grant, decrypts on your machine,
+  and every change can be undone;
+- **folders on your own disk**: the same tidying jobs, with no network access
+  at all.
 
 ShieldFive's servers never see a file name or a byte of content in the clear,
 and that holds with this server running too. Decryption happens inside this
@@ -515,6 +519,34 @@ asserted.
 windows in which a rename can still replace something, hardlinks, what
 inheriting the environment does and does not mean, and what the no-network
 assertion covers.
+
+## Privacy Policy
+
+This server sends nothing anywhere unless a ShieldFive connection is
+configured, and then only to ShieldFive's API (`https://shieldfive.com`, or the
+origin in `SHIELDFIVE_API_URL`):
+
+- **What it sends:** requests the vault tools need — listings, reads and
+  changes by id, and for uploads the ciphertext and wrapped keys it produced on
+  this machine. File names and contents are encrypted before they leave; a
+  storage upload goes straight to a presigned storage URL and never carries the
+  connection credential.
+- **What it never sends:** plaintext names or contents, local paths, anything
+  about your local folders, telemetry or analytics. The local tools make no
+  network request at all.
+- **What ShieldFive keeps:** a record of the connection and of each request it
+  makes (ids, action, result, time — no names, contents, IP address or user
+  agent), kept while your account exists and deleted with it. Section 3.9 of
+  the [ShieldFive Privacy Policy](https://shieldfive.com/privacy) covers these
+  records, their retention and your rights over them.
+- **What your assistant receives:** whatever it reads through this server,
+  decrypted here, goes to whoever runs the assistant, under their terms — as
+  anything else in that conversation would.
+- **Credential:** kept in the OS keychain (or `SHIELDFIVE_GRANT`), never logged,
+  returned or written to a file.
+
+Contact: [support@shieldfive.com](mailto:support@shieldfive.com), or
+[security@shieldfive.com](mailto:security@shieldfive.com) for vulnerabilities.
 
 ## Security
 
