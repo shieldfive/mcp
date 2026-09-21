@@ -149,6 +149,9 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     proofs: [],
     finalizeFails: false,
     storageRejects: false,
+    // Store a copy that differs from what was uploaded, as a bad disk or a
+    // tampering server would: the read-back must catch it.
+    corruptStored: false,
     servedPublicKey: null,
   }
   const pendingUploads = new Map()
@@ -309,7 +312,9 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
         cskWrapped: started.cskWrapped, cskIv: started.cskIv,
         pqkFkWrapped: started.pqkFkWrapped, pqkFkIv: started.pqkFkIv,
       })
-      blobs.set(m[1], state.uploadedBlobs.get(m[1]))
+      const kept = Buffer.from(state.uploadedBlobs.get(m[1]))
+      if (state.corruptStored) kept[kept.length - 1] ^= 0xff
+      blobs.set(m[1], kept)
       state.writeUsed += started.sizeBytes
       state.audit.push({ action: 'upload_file', id: m[1] })
       return json(200, { fileId: m[1], sizeBytes: started.sizeBytes, auditId: state.audit.length, status: 'stored' })

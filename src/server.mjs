@@ -47,6 +47,7 @@ import {
   vaultTrash,
 } from './tools/vault.mjs'
 import { vaultConnect } from './tools/vaultConnect.mjs'
+import { MOVE_MAX_FILES, vaultMoveIn } from './tools/vaultMoveIn.mjs'
 import { vaultUpload } from './tools/vaultUpload.mjs'
 import { createLocalFileGateway } from './localSource.mjs'
 import { createVaultApi, DEFAULT_API_URL } from './vault/api.mjs'
@@ -391,7 +392,8 @@ export const VAULT_TOOLS = [
       'this connection covers — the way to free up space on a laptop or phone backup without handing the ' +
       'files to anyone. Encryption happens here; ShieldFive only ever receives ciphertext. The upload is ' +
       'then READ BACK and compared byte for byte, and only then may you offer to move the local original ' +
-      'to the local trash with trash_local (which asks for its own confirmation). Needs "write". ' +
+      'to the local trash with trash_local (which asks for its own confirmation). To free space in one ' +
+      'step, prefer vault_move_in. Needs "write". ' +
       'Without confirm: true only reports the plan; show it to the user before confirming.',
     inputSchema: {
       path: z.string().min(1).max(LIMITS.pathChars).describe('The local file to upload.'),
@@ -402,6 +404,28 @@ export const VAULT_TOOLS = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     handler: vaultUpload,
+  },
+  {
+    name: 'vault_move_in',
+    title: 'Move files into the vault',
+    description:
+      'Free up space on this machine: move local files into a ShieldFive vault folder with ONE approval. ' +
+      'Each file is encrypted here, uploaded, READ BACK and compared byte for byte, and only after that ' +
+      'is its original moved to this server’s local trash (with a manifest naming the vault copy). ' +
+      'Nothing is deleted; space is freed when the user empties that trash. The first failure stops the ' +
+      'batch and leaves that file and the rest untouched. Needs "write". Without confirm: true only ' +
+      'reports the plan; show it to the user before confirming.',
+    inputSchema: {
+      paths: z
+        .array(z.string().min(1).max(LIMITS.pathChars))
+        .min(1)
+        .max(MOVE_MAX_FILES)
+        .describe(`Local files to move, at most ${MOVE_MAX_FILES}. Files only, not folders.`),
+      destination_folder_id: idArg.describe('The vault folder they go into.'),
+      ...confirmArgs,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    handler: vaultMoveIn,
   },
 ]
 
@@ -566,9 +590,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const now = () => Date.now()
   const ctx = {
     roots,
-    // The one door to the local filesystem the vault half may use, and only
-    // for reading a file it is uploading (src/localSource.mjs).
-    localFiles: roots.length ? null : null,
+    // The one door to the local filesystem the vault half may use: reading a
+    // file it is uploading, and moving a VERIFIED upload into this server's
+    // own trash (src/localSource.mjs). Set below, once ctx exists.
+    localFiles: null,
     noRootsMessage: NO_ROOTS_MESSAGE,
     now,
     plans: createPlanStore({ now }),

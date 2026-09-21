@@ -240,7 +240,7 @@ describe('the README does not drift from the code', () => {
     const readme = await readFile(join(ROOT, 'README.md'), 'utf8')
     const server = await readFile(join(SRC, 'server.mjs'), 'utf8')
     const registered = [...server.matchAll(/^\s*name: '([a-z_]+)',$/gm)].map((m) => m[1])
-    assert.equal(registered.length, 20)
+    assert.equal(registered.length, 21)
     for (const name of registered) {
       assert.ok(readme.includes(`\`${name}\``), `README does not document ${name}`)
     }

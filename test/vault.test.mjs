@@ -74,8 +74,8 @@ describe('vault tools', () => {
   it('registers only the vault tools when no local roots are configured', async () => {
     const { tools } = await client.listTools()
     assert.ok(tools.every((t) => t.name.startsWith('vault_')), tools.map((t) => t.name).join())
-    // The ten vault tools (upload included), plus vault_connect.
-    assert.equal(tools.length, 11)
+    // The eleven vault tools (upload and move-in included), plus vault_connect.
+    assert.equal(tools.length, 12)
     const trash = tools.find((t) => t.name === 'vault_trash')
     assert.equal(trash.annotations.destructiveHint, true)
     assert.equal(tools.find((t) => t.name === 'vault_read_file').annotations.readOnlyHint, true)
@@ -417,4 +417,146 @@ describe('vault_upload', () => {
     assert.match(r.error, /storage|upload/i)
   })
 
+})
+
+describe('vault_move_in', () => {
+  const WRITE = ['read', 'organize', 'write']
+  const A = 'receipt for the boiler service\n'.repeat(100)
+  const B = 'scan of the passport, page 2\n'.repeat(80)
+
+  const withFiles = () =>
+    connect({ scopes: WRITE, tree: { 'Desktop/a.txt': A, 'Desktop/b.txt': B, 'Desktop/keep.txt': 'stay' } })
+
+  const exists = async (p) => {
+    const { lstat } = await import('node:fs/promises')
+    return lstat(p).then(() => true, () => false)
+  }
+
+  it('uploads, verifies each file, then moves the originals to the local trash with one approval', async () => {
+    await withFiles()
+    const args = {
+      paths: [tree.path('Desktop/a.txt'), tree.path('Desktop/b.txt')],
+      destination_folder_id: vault.ids.tax,
+    }
+    const preview = await call('vault_move_in', args)
+    assert.equal(preview.error, null, preview.error)
+    assert.equal(preview.data.performed, false)
+    assert.equal(preview.data.files.length, 2)
+    assert.match(preview.texts[0], /Nothing is deleted/)
+    // A preview uploads nothing and moves nothing.
+    assert.equal(vault.state.uploadedBlobs.size, 0)
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+
+    const done = await call('vault_move_in', { ...args, confirm: true, plan_token: preview.data.plan_token })
+    assert.equal(done.error, null, done.error)
+    assert.equal(done.data.moved.length, 2)
+    assert.equal(done.data.space_freed_bytes, 0)
+    assert.equal(done.data.space_recoverable_bytes, A.length + B.length)
+
+    for (const m of done.data.moved) {
+      // Gone from where it was, present in the trash: moved, never deleted.
+      assert.ok(!(await exists(m.source)), `${m.source} should have moved`)
+      assert.ok(await exists(m.trashed_to), `${m.trashed_to} should exist`)
+      assert.ok(m.trashed_to.includes('.shieldfive-mcp-trash'))
+      // The owner's own keys open the vault copy's name.
+      assert.equal(await vault.ownerName(m.vault_file_id), m.source.split('/').pop())
+    }
+    // The untouched file is untouched.
+    assert.ok(await exists(tree.path('Desktop/keep.txt')))
+
+    // The manifest names the vault copy of every original.
+    const { readFile } = await import('node:fs/promises')
+    const { dirname, join } = await import('node:path')
+    const batchDir = dirname(done.data.moved[0].trashed_to).split('/Desktop')[0]
+    const manifest = JSON.parse(await readFile(join(batchDir, 'manifest.json'), 'utf8'))
+    assert.deepEqual(
+      manifest.items.map((i) => i.vault_file_id).sort(),
+      done.data.moved.map((m) => m.vault_file_id).sort(),
+    )
+  })
+
+  it('refuses a connection without the write scope, before touching anything', async () => {
+    await connect({ tree: { 'a.txt': 'hello' } })
+    const r = await call('vault_move_in', { paths: [tree.path('a.txt')], destination_folder_id: vault.ids.tax })
+    assert.match(r.error ?? '', /cannot add files/)
+    assert.ok(await exists(tree.path('a.txt')))
+  })
+
+  it('refuses up front when the files cannot fit in the upload allowance', async () => {
+    await withFiles()
+    vault.state.writeBudget = A.length
+    const r = await call('vault_move_in', {
+      paths: [tree.path('Desktop/a.txt'), tree.path('Desktop/b.txt')],
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.match(r.error ?? '', /upload allowance/)
+    assert.equal(vault.state.uploadedBlobs.size, 0)
+  })
+
+  it('leaves the original in place when the vault copy does not read back identical', async () => {
+    await withFiles()
+    vault.state.corruptStored = true
+    const r = await confirmed('vault_move_in', {
+      paths: [tree.path('Desktop/a.txt'), tree.path('Desktop/b.txt')],
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.ok(r.error)
+    assert.match(r.error, /Stopped after 0 of 2/)
+    assert.match(r.error, /NOT verified/)
+    // Neither original moved, and the second was never even uploaded.
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+    assert.ok(await exists(tree.path('Desktop/b.txt')))
+    assert.equal(vault.state.uploadedBlobs.size, 1)
+  })
+
+  it('stops at a storage failure and moves nothing', async () => {
+    await withFiles()
+    vault.state.storageRejects = true
+    const r = await confirmed('vault_move_in', {
+      paths: [tree.path('Desktop/a.txt')],
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.ok(r.error)
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+  })
+
+  it('refuses a confirmation whose files changed since the plan', async () => {
+    await withFiles()
+    const args = { paths: [tree.path('Desktop/a.txt')], destination_folder_id: vault.ids.tax }
+    const preview = await call('vault_move_in', args)
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(tree.path('Desktop/a.txt'), 'rewritten after the preview')
+    const r = await call('vault_move_in', { ...args, confirm: true, plan_token: preview.data.plan_token })
+    assert.ok(r.error)
+    assert.equal(vault.state.uploadedBlobs.size, 0)
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+  })
+
+  it('refuses two files that would share a name in the vault folder', async () => {
+    await connect({ scopes: WRITE, tree: { 'one/x.txt': 'a', 'two/x.txt': 'b' } })
+    const r = await call('vault_move_in', {
+      paths: [tree.path('one/x.txt'), tree.path('two/x.txt')],
+      destination_folder_id: vault.ids.tax,
+    })
+    assert.match(r.error ?? '', /both be named/)
+  })
+
+  it('refuses a folder: only files move', async () => {
+    await withFiles()
+    const r = await call('vault_move_in', { paths: [tree.path('Desktop')], destination_folder_id: vault.ids.tax })
+    assert.ok(r.error)
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+  })
+
+  it('will not trash a file that changed after it was read for upload', async () => {
+    await withFiles()
+    const roots = (await resolveRoots([tree.path('.')])).roots
+    const gateway = createLocalFileGateway({ roots, now: () => Date.now() })
+    const local = await gateway.describe(tree.path('Desktop/a.txt'))
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(tree.path('Desktop/a.txt'), 'edited after the upload read it')
+    const trash = gateway.openTrash()
+    await assert.rejects(trash.trash(local.path, local.entry, {}), /changed after it was uploaded/)
+    assert.ok(await exists(tree.path('Desktop/a.txt')))
+  })
 })

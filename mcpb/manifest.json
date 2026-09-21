@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "shieldfive",
   "display_name": "ShieldFive",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Tidy your encrypted ShieldFive vault and local folders: find duplicates, free space, reorganise.",
   "long_description": "Works on the ShieldFive vault folders you grant in ShieldFive \u2192 Settings \u2192 AI assistants, and on local folders you choose. Files are decrypted on this computer only; ShieldFive never sees names or contents in the clear. Access is scoped, expires, can be revoked at any time, and every change is logged and undoable. What the assistant reads is sent to the assistant's provider, like the rest of the conversation.",
   "author": {
@@ -54,6 +54,10 @@
   },
   "tools": [
     {
+      "name": "vault_connect",
+      "description": "Connect to your ShieldFive vault by authorizing in the browser"
+    },
+    {
       "name": "vault_list_files",
       "description": "List vault files in scope with decrypted names"
     },
@@ -88,6 +92,14 @@
     {
       "name": "vault_trash",
       "description": "Move up to 50 items to the Bin; nothing is deleted"
+    },
+    {
+      "name": "vault_upload",
+      "description": "Encrypt a local file here, upload it, and verify it by reading it back"
+    },
+    {
+      "name": "vault_move_in",
+      "description": "Free up space: move local files into the vault, each verified before its original goes to the local trash"
     },
     {
       "name": "list_local",
