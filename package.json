@@ -1,9 +1,9 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "type": "module",
   "description": "MCP server for your end-to-end encrypted ShieldFive vault: move files off your computer into it (each copy verified before the original moves, nothing deleted), find duplicates, reclaim space and reorganise. Decrypts on your machine; access is scoped, expiring, revocable and audited.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "Cho Garcia <security@shieldfive.com>",
   "homepage": "https://github.com/shieldfive/mcp",
   "repository": {

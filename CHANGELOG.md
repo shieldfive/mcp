@@ -5,6 +5,13 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.4 — 2026-09-21
+
+### Changed
+
+- Licensed under MIT instead of Apache-2.0. Earlier versions keep the licence
+  they were published under.
+
 ## 0.6.3 — 2026-09-21
 
 ### Changed

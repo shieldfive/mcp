@@ -555,4 +555,4 @@ Report vulnerabilities to `security@shieldfive.com`. See
 
 ## Licence
 
-Apache-2.0.
+MIT. Versions up to and including 0.6.3 were published under Apache-2.0.
