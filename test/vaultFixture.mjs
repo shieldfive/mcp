@@ -3,7 +3,7 @@
 // ciphertext in all three formats the vault stores. Nothing here is mocked
 // cryptographically — the MCP must genuinely decrypt what this builds.
 
-import { randomBytes, randomUUID, webcrypto } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, webcrypto } from 'node:crypto'
 
 import { bytesToBase64 } from '@shieldfive/crypto'
 import { encryptBytes as encryptV1 } from '@shieldfive/crypto/aes-gcm-v1'
@@ -295,6 +295,9 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
       const started = pendingUploads.get(m[1])
       if (!started) return json(404, { code: 'not_found' })
       if (!state.uploadedBlobs.has(m[1])) return json(400, { code: 'finalize_failed' })
+      // As production: the SHA-1 of the stored bytes is the one-part manifest.
+      const sha1 = createHash('sha1').update(state.uploadedBlobs.get(m[1])).digest('hex')
+      if (body.ciphertextHash !== sha1) return json(400, { code: 'bad_request' })
       if (state.finalizeFails) return json(400, { code: 'finalize_failed' })
       state.proofs.push({ id: m[1], proof: body.proof })
       files.set(m[1], {

@@ -186,9 +186,12 @@ export async function vaultUpload(ctx, args) {
 
   ctx.progress?.(3, 4, 'Finalizing')
   const proof = await uploadProof(session.proofKey, enc.ciphertext)
+  // The SHA-1 of the bytes just PUT is finalize's one-part manifest, the same
+  // value the app sends for its own single-part uploads.
+  const ciphertextHash = createHash('sha1').update(enc.ciphertext).digest('hex')
   const finalized = await ctx.vault.api.finalizeUpload(
     session.fileId,
-    { proof },
+    { proof, ciphertextHash },
     ctx.signal,
   )
   // Verify: read it back through the vault and compare to what left the disk.
