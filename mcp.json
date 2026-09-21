@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shieldfive": {
+      "command": "npx",
+      "args": ["-y", "@shieldfive/mcp"]
+    }
+  }
+}
