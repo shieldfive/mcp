@@ -3,7 +3,7 @@
   "name": "io.github.shieldfive/mcp",
   "title": "ShieldFive",
   "description": "Move files off your computer into an E2E-encrypted vault, verified first. Decrypts locally.",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "repository": {
     "url": "https://github.com/shieldfive/mcp",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@shieldfive/mcp",
-      "version": "0.6.3",
+      "version": "0.6.4",
       "transport": {
         "type": "stdio"
       },
