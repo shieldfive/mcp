@@ -1,7 +1,9 @@
 // vault_connect: connect this server to a ShieldFive vault from inside the
 // conversation. It opens ShieldFive in the user's browser; they choose what the
 // assistant may reach and click Authorize; the connection is delivered to this
-// process over 127.0.0.1 (vault/connect.mjs) and stored in the OS keychain.
+// process over 127.0.0.1 (vault/connect.mjs) and stored in the OS keychain, or
+// where there is none, in a file only this user can read (vault/credential.mjs).
+// Storing it is what stops every restart from minting a new grant.
 //
 // A tool call cannot wait ten minutes (clients time out after about a minute),
 // so the call waits briefly and, if the user has not finished yet, says so. The
@@ -12,7 +14,7 @@ import { parseConnectionString } from '@shieldfive/crypto/vault'
 import { ToolError } from '../roots.mjs'
 import { describeGrant } from '../vault/cli.mjs'
 import { clientHintFor, connectLabel, openBrowser, startConnectFlow } from '../vault/connect.mjs'
-import { writeKeychain } from '../vault/credential.mjs'
+import { storeConnection } from '../vault/credential.mjs'
 
 export const CONNECT_WAIT_MS = 45_000
 
@@ -100,22 +102,39 @@ export async function vaultConnect(ctx, args) {
     await next.names?.close?.()
     throw err
   }
-  let stored = true
+  let stored = null
   try {
-    await (root.writeKeychain ?? writeKeychain)(raw)
+    stored = await (root.storeConnection ?? storeConnection)(raw)
   } catch {
-    stored = false
+    stored = null
   }
   const previous = root.vault
   root.vault = next
   await previous?.names?.close?.()
   root.onConnected?.()
 
-  const persistence = stored
-    ? root.envGrant
-      ? 'Saved in the system keychain, but SHIELDFIVE_GRANT in the assistant’s MCP settings still takes ' +
-        'precedence after a restart; remove it there to use this one.'
+  const envNote = root.envGrant
+    ? ' SHIELDFIVE_GRANT in the assistant’s MCP settings still takes precedence after a restart; ' +
+      'remove it there to use this one.'
+    : ''
+  let persistence
+  if (stored?.store === 'file') {
+    persistence =
+      `No system keychain is available, so the connection was saved to ${stored.path}, readable only by ` +
+      'this user account, and stays connected after restarts. Tell the user where it is; deleting that file ' +
+      '(or `npx @shieldfive/mcp logout`) forgets it, and revoking it in ShieldFive cuts off access.' +
+      envNote
+  } else if (stored) {
+    persistence = root.envGrant
+      ? `Saved in the system keychain.${envNote}`
       : 'Saved in the system keychain, so it stays connected after restarts.'
-    : 'No system keychain is available, so this connection lasts until the assistant restarts.'
+  } else {
+    persistence =
+      'It could not be saved on this computer (no system keychain and no writable config directory), so ' +
+      'it lasts until the assistant restarts. To keep it, the user can paste a connection string from ' +
+      'ShieldFive → Settings → AI assistants into this server’s connection setting (SHIELDFIVE_GRANT, or ' +
+      '“ShieldFive connection string” in Claude Desktop’s extension settings). Do not call vault_connect ' +
+      'again after a restart without telling the user: each call creates a new connection.'
+  }
   return text(`Connected (${describeGrant(grant)}). ${persistence} The vault_* tools are ready to use now.`)
 }

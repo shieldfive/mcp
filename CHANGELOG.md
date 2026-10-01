@@ -5,6 +5,27 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- The Claude Desktop bundle (`.mcpb`) now carries the keychain binary for
+  macOS (arm64, x64), Windows (x64, arm64) and Linux (x64, arm64 glibc). It was
+  built on Linux with a plain `npm ci`, which installs only the build machine's
+  binary, so on macOS and Windows the connection was never saved and every
+  restart created a new 7-day connection until ShieldFive refused more. The
+  build adds each binary from the tarball `package-lock.json` pins (integrity
+  checked) and fails if one is missing; CI builds the bundle on every PR.
+- Where no keychain is usable, `vault_connect` and `login` save the connection
+  to a file only the user can read (0600) and say where, instead of keeping it
+  in memory until the next restart. `logout` removes it; a later keychain save
+  deletes it.
+
+### Changed
+
+- The bundle build pins the MCPB packer (`@anthropic-ai/mcpb@2.1.2`) and runs
+  `npm ci --ignore-scripts`.
+
 ## 0.6.5 — unreleased
 
 ### Security

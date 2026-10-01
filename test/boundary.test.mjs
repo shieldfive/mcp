@@ -160,7 +160,12 @@ describe('the only credential is an agent grant', () => {
       const code = executable(await readFile(file, 'utf8'))
       for (const m of code.matchAll(/(?:process\.)?env\.([A-Z0-9_]+)/g)) seen.add(m[1])
     }
-    assert.deepEqual([...seen].sort(), ['SHIELDFIVE_API_URL', 'SHIELDFIVE_GRANT', 'SHIELDFIVE_MCP_ROOTS'])
+    // HOME / USERPROFILE / APPDATA / XDG_CONFIG_HOME and SHIELDFIVE_MCP_CONFIG_DIR
+    // only locate the no-keychain connection file (vault/credential.mjs).
+    assert.deepEqual([...seen].sort(), [
+      'APPDATA', 'HOME', 'SHIELDFIVE_API_URL', 'SHIELDFIVE_GRANT', 'SHIELDFIVE_MCP_CONFIG_DIR',
+      'SHIELDFIVE_MCP_ROOTS', 'USERPROFILE', 'XDG_CONFIG_HOME',
+    ])
   })
 
   it('spawns nothing but the browser, with a fixed command and no shell', async () => {
@@ -203,6 +208,17 @@ describe('cryptography comes from @shieldfive/crypto, and plaintext stays in mem
   it('the vault modules cannot write to disk: they import no filesystem module', async () => {
     for (const file of await sourceFiles()) {
       if (!isVault(file)) continue
+      if (file.endsWith(join('vault', 'credential.mjs'))) {
+        // The one exception: where no keychain is usable, the connection string
+        // (a credential, never file content) is kept in a 0600 file. This
+        // module must not reach anything that decrypts.
+        const code = executable(await readFile(file, 'utf8'))
+        for (const spec of importSpecifiers(code)) {
+          assert.ok(!/content|session|upload|namePool|nameWorker|api\.mjs/.test(spec), `credential.mjs imports ${spec}`)
+        }
+        assert.equal([...code.matchAll(/\bwriteFile\(/g)].length, 1, 'credential.mjs writes exactly one file')
+        continue
+      }
       const code = executable(await readFile(file, 'utf8'))
       for (const spec of importSpecifiers(code)) {
         assert.ok(!/^(node:)?fs(\/promises)?$/.test(spec), `${file} imports ${spec}; decrypted data must stay in memory`)

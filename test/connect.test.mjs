@@ -262,7 +262,7 @@ describe('the vault_connect tool', () => {
       connectWaitMs: 100,
       clientName: () => 'claude-ai',
       openBrowser: async () => true,
-      writeKeychain: async () => {},
+      storeConnection: async () => ({ store: 'keychain' }),
       makeVault: async (credential) => ({
         credential,
         api: { grant: async () => ({ grant: { id: '11111111-2222-4333-8444-555555555555', scopes: ['read'], scopeAll: true, scopeFolderIds: [], expiresAt: '2027-01-01T00:00:00Z' } }) },
@@ -293,8 +293,9 @@ describe('the vault_connect tool', () => {
     const root = fakeRoot({
       // Long enough that the wait is ended by the delivery, not by the clock.
       connectWaitMs: 5_000,
-      writeKeychain: async (raw) => {
+      storeConnection: async (raw) => {
         stored = raw
+        return { store: 'keychain' }
       },
       onConnected: () => (announced += 1),
     })
