@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `vault_connect` with `reconnect: true` (or after a restart that lost the
+  connection) now revokes the connection it replaces, using that connection's
+  own credentials (`POST /api/agent/v1/grant/revoke`), so the owner's Settings
+  no longer fills with live duplicates. The revoke is best-effort and never
+  blocks the new connection. When it fails, the tool says the old connection is
+  still live and where to revoke it. A connection from `SHIELDFIVE_GRANT` is
+  left alone and reported, because the user configured it.
 - The Claude Desktop bundle (`.mcpb`) now carries the keychain binary for
   macOS (arm64, x64), Windows (x64, arm64) and Linux (x64, arm64 glibc). It was
   built on Linux with a plain `npm ci`, which installs only the build machine's

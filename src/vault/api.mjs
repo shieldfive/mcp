@@ -159,6 +159,8 @@ export function createVaultApi({ credential, baseUrl = DEFAULT_API_URL, fetchImp
 
   return {
     grant: (signal) => call('GET', '/grant', undefined, signal),
+    /** End this grant (it can only ever end itself). Used when a reconnect replaces it. */
+    revoke: (signal) => call('POST', '/grant/revoke', undefined, signal),
     folders: (signal) => listAll('/folders', 'folders', signal),
     files: (signal) => listAll('/files', 'files', signal),
     stats: (signal) => call('GET', '/stats', undefined, signal),

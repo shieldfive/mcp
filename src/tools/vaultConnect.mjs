@@ -17,6 +17,42 @@ import { clientHintFor, connectLabel, openBrowser, startConnectFlow } from '../v
 import { storeConnection } from '../vault/credential.mjs'
 
 export const CONNECT_WAIT_MS = 45_000
+export const REVOKE_WAIT_MS = 10_000
+
+/**
+ * Best-effort: end the grant a reconnect replaced, using that grant's own
+ * credentials. Never blocks the new connection; returns a sentence for the
+ * user whenever the old grant may still be live, so it is never left behind
+ * silently.
+ */
+async function retirePrevious(previous, nextGrantId, signal) {
+  const old = previous?.credential
+  if (!old?.grantId || old.grantId === nextGrantId) return ''
+  const id = `${old.grantId.slice(0, 8)}…`
+  if (old.source === 'env') {
+    // Revoking it would break the SHIELDFIVE_GRANT the user configured, which
+    // still wins after a restart. Their call, so say so instead.
+    return (
+      ` The previous connection (${id}, from SHIELDFIVE_GRANT) was left live because it is in the ` +
+      'assistant’s settings; revoke it in ShieldFive → Settings → AI assistants if it is no longer wanted.'
+    )
+  }
+  if (typeof previous.api?.revoke !== 'function') return ''
+  // Bounded: a slow or rate-limited server must not hold up the new connection.
+  const timeout = AbortSignal.timeout(REVOKE_WAIT_MS)
+  try {
+    await previous.api.revoke(signal ? AbortSignal.any([signal, timeout]) : timeout)
+    return ` The previous connection (${id}) was revoked.`
+  } catch (err) {
+    // 401: already revoked or expired, so nothing is left live. Anything else
+    // (including a 404 from a server without this endpoint) is reported.
+    if (err?.code === 'grant_invalid') return ''
+    return (
+      ` The previous connection (${id}) could not be revoked automatically and is still live until it ` +
+      'expires; ask the user to revoke it in ShieldFive → Settings → AI assistants.'
+    )
+  }
+}
 
 function text(summary) {
   return { content: [{ type: 'text', text: summary }] }
@@ -110,6 +146,7 @@ export async function vaultConnect(ctx, args) {
   }
   const previous = root.vault
   root.vault = next
+  const retired = await retirePrevious(previous, grant?.id ?? credential.grantId, ctx.signal)
   await previous?.names?.close?.()
   root.onConnected?.()
 
@@ -136,5 +173,7 @@ export async function vaultConnect(ctx, args) {
       '“ShieldFive connection string” in Claude Desktop’s extension settings). Do not call vault_connect ' +
       'again after a restart without telling the user: each call creates a new connection.'
   }
-  return text(`Connected (${describeGrant(grant)}). ${persistence} The vault_* tools are ready to use now.`)
+  return text(
+    `Connected (${describeGrant(grant)}). ${persistence}${retired} The vault_* tools are ready to use now.`,
+  )
 }
