@@ -32,12 +32,16 @@ Requires Node 20 or newer.
    ```json
    {
      "mcpServers": {
-       "shieldfive": { "command": "npx", "args": ["-y", "@shieldfive/mcp"] }
+       "shieldfive": { "command": "npx", "args": ["-y", "@shieldfive/mcp@0.6.5"] }
      }
    }
    ```
 
-   For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp`
+   For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp@0.6.5`
+
+   The version is pinned on purpose: the server can read your connection, so
+   pin the release you reviewed and change the number when you choose to
+   upgrade, instead of running whatever was published last.
 
 2. Restart the assistant and ask it to *tidy up my ShieldFive vault*. It calls
    `vault_connect`, which opens ShieldFive in your browser.
@@ -48,12 +52,12 @@ That is the whole setup: the connection is delivered straight to the server
 running on your computer — over `127.0.0.1`, never through ShieldFive — and
 stored in your system keychain. Nothing is copied by hand.
 
-To connect before you start a conversation, run `npx -y @shieldfive/mcp login`:
+To connect before you start a conversation, run `npx -y @shieldfive/mcp@0.6.5 login`:
 same browser page, same result. `login --paste` takes a connection string you
 copied from Settings → AI assistants instead, for a machine with no browser.
 
-`npx @shieldfive/mcp status` shows which connection is configured and whether
-ShieldFive still accepts it. `npx @shieldfive/mcp logout` removes it from the
+`npx @shieldfive/mcp@0.6.5 status` shows which connection is configured and whether
+ShieldFive still accepts it. `npx @shieldfive/mcp@0.6.5 logout` removes it from the
 keychain. Revoking it in ShieldFive is what cuts off access everywhere.
 
 For CI or a machine without a keychain, set `SHIELDFIVE_GRANT` to the connection
@@ -179,7 +183,7 @@ Every path after the package name is a **root**. The local tools can read and
 write inside those directories and nowhere else, and make no network request.
 
 ```sh
-npx @shieldfive/mcp ~/Documents ~/Downloads
+npx @shieldfive/mcp@0.6.5 ~/Documents ~/Downloads
 ```
 
 In `claude_desktop_config.json`:
@@ -189,7 +193,7 @@ In `claude_desktop_config.json`:
   "mcpServers": {
     "shieldfive": {
       "command": "npx",
-      "args": ["-y", "@shieldfive/mcp", "/Users/you/Documents", "/Volumes/Archive"]
+      "args": ["-y", "@shieldfive/mcp@0.6.5", "/Users/you/Documents", "/Volumes/Archive"]
     }
   }
 }
@@ -204,7 +208,7 @@ alternatives — as a list separated by your platform's path separator (`:` on
 macOS and Linux, `;` on Windows):
 
 ```sh
-SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp
+SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp@0.6.5
 ```
 
 Whitespace around a root is ignored. In a path given to a tool it is not: there,
@@ -435,7 +439,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 225 tests. The ones worth knowing about:
+`npm test` runs 230 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.

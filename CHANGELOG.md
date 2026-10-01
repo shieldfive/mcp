@@ -5,6 +5,24 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.5 — unreleased
+
+### Security
+
+- `@shieldfive/crypto` is pinned to `1.0.1` (was `1.0.0-rc.6`). That release
+  stops a server-rewritten name envelope (`kdf: "moderate"`) from raising the
+  Argon2id cost of every name this server opens, rejects non-canonical
+  connection strings, and keeps malformed envelopes inside the library's error
+  contract.
+- Legacy v0 files (`cipher_version` 1) are checked against the ciphertext size
+  ShieldFive recorded for them before they are decrypted. v0 has no length
+  binding, so a server that dropped whole trailing chunks could hand back a
+  shorter file that still decrypted. The web app already made this check.
+
+### Changed
+
+- Install snippets in the README and `mcp.json` name an exact version.
+
 ## 0.6.4 — 2026-09-21
 
 ### Changed

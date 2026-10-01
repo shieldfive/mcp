@@ -63,6 +63,7 @@ export async function decryptContent(file, view, api, { maxBytes, signal }) {
     } else if (row.cipherVersion === 2) {
       out = await decryptV1({ blob, contentKey: key })
     } else if (row.cipherVersion === 1) {
+      assertV0NotTruncated(ciphertext.length, row.ciphertextSize)
       const plain = await decryptV0({
         blob,
         contentKey: key,
@@ -82,6 +83,22 @@ export async function decryptContent(file, view, api, { maxBytes, signal }) {
   }
   if (out.length > maxBytes) throw new ToolError('too_large', 'File exceeds the size cap.')
   return out
+}
+
+/**
+ * Legacy v0 (cipher_version 1) has no header, no chunk-index AAD and no length
+ * field (crypto spec/format-v0.md, "No truncation detection"): dropping whole
+ * trailing chunks leaves every remaining tag valid, so a short plaintext would
+ * come back as a successful decrypt. The only truncation oracle is the
+ * ciphertext size the server recorded at finalize (`files.size_bytes`, served
+ * as `ciphertextSize`). Same rule as the web reader's `assertV0NotTruncated`:
+ * one-sided (a longer blob fails AES-GCM on the extra tail anyway), and skipped
+ * when no size was recorded.
+ */
+export function assertV0NotTruncated(actualSize, expected) {
+  if (typeof expected !== 'number' || !Number.isFinite(expected) || expected <= 0) return
+  if (actualSize >= expected) return
+  throw new Error(`truncated v0 ciphertext: ${actualSize} < ${expected}`)
 }
 
 export function sha256Hex(bytes) {
