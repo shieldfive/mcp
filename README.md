@@ -32,12 +32,12 @@ Requires Node 20 or newer.
    ```json
    {
      "mcpServers": {
-       "shieldfive": { "command": "npx", "args": ["-y", "@shieldfive/mcp@0.6.5"] }
+       "shieldfive": { "command": "npx", "args": ["-y", "@shieldfive/mcp@0.6.6"] }
      }
    }
    ```
 
-   For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp@0.6.5`
+   For Claude Code: `claude mcp add shieldfive -- npx -y @shieldfive/mcp@0.6.6`
 
    The version is pinned on purpose: the server can read your connection, so
    pin the release you reviewed and change the number when you choose to
@@ -52,12 +52,12 @@ That is the whole setup: the connection is delivered straight to the server
 running on your computer — over `127.0.0.1`, never through ShieldFive — and
 stored in your system keychain. Nothing is copied by hand.
 
-To connect before you start a conversation, run `npx -y @shieldfive/mcp@0.6.5 login`:
+To connect before you start a conversation, run `npx -y @shieldfive/mcp@0.6.6 login`:
 same browser page, same result. `login --paste` takes a connection string you
 copied from Settings → AI assistants instead, for a machine with no browser.
 
-`npx @shieldfive/mcp@0.6.5 status` shows which connection is configured and whether
-ShieldFive still accepts it. `npx @shieldfive/mcp@0.6.5 logout` removes it from the
+`npx @shieldfive/mcp@0.6.6 status` shows which connection is configured and whether
+ShieldFive still accepts it. `npx @shieldfive/mcp@0.6.6 logout` removes it from the
 keychain and from the fallback file below. Revoking it in ShieldFive is what cuts off access everywhere.
 
 Where no system keychain can be used (a Linux machine without a Secret Service,
@@ -195,7 +195,7 @@ Every path after the package name is a **root**. The local tools can read and
 write inside those directories and nowhere else, and make no network request.
 
 ```sh
-npx @shieldfive/mcp@0.6.5 ~/Documents ~/Downloads
+npx @shieldfive/mcp@0.6.6 ~/Documents ~/Downloads
 ```
 
 In `claude_desktop_config.json`:
@@ -205,7 +205,7 @@ In `claude_desktop_config.json`:
   "mcpServers": {
     "shieldfive": {
       "command": "npx",
-      "args": ["-y", "@shieldfive/mcp@0.6.5", "/Users/you/Documents", "/Volumes/Archive"]
+      "args": ["-y", "@shieldfive/mcp@0.6.6", "/Users/you/Documents", "/Volumes/Archive"]
     }
   }
 }
@@ -220,7 +220,7 @@ alternatives — as a list separated by your platform's path separator (`:` on
 macOS and Linux, `;` on Windows):
 
 ```sh
-SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp@0.6.5
+SHIELDFIVE_MCP_ROOTS="/Users/you/Documents:/Volumes/Archive" npx @shieldfive/mcp@0.6.6
 ```
 
 Whitespace around a root is ignored. In a path given to a tool it is not: there,
