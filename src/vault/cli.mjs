@@ -5,14 +5,14 @@
 // 127.0.0.1 (connect.mjs). `login --paste` reads it from the terminal instead,
 // without echoing it. Either way it is checked against the server (so a
 // revoked grant is caught now, not in the middle of a conversation) and stored
-// in the OS keychain. Nothing is written to a file and the value is never
-// printed.
+// in the OS keychain, or, where there is no keychain, in a file only this user
+// can read (credential.mjs explains why). The value is never printed.
 
 import { parseConnectionString } from '@shieldfive/crypto/vault'
 
 import { createVaultApi, DEFAULT_API_URL } from './api.mjs'
 import { openBrowser, startConnectFlow } from './connect.mjs'
-import { deleteKeychain, loadGrantCredential, writeKeychain } from './credential.mjs'
+import { deleteStoredConnection, loadGrantCredential, storeConnection } from './credential.mjs'
 
 const out = (s) => process.stderr.write(`${s}\n`)
 
@@ -115,21 +115,32 @@ export async function runCli(command, env = process.env, args = [], { open = ope
       out(`ShieldFive did not accept it: ${err?.message ?? 'unknown error'}`)
       return 1
     }
+    let stored
     try {
-      await writeKeychain(raw)
+      stored = await storeConnection(raw, { env })
     } catch {
       out(
-        'No system keychain is available here. Set SHIELDFIVE_GRANT in the MCP server’s ' +
-          'environment instead (anything that can read that environment can read the connection).',
+        'No system keychain is available here, and the config directory is not writable. Set ' +
+          'SHIELDFIVE_GRANT in the MCP server’s environment instead (anything that can read that ' +
+          'environment can read the connection).',
       )
       return 1
     }
-    out('Saved to the system keychain. Restart your AI assistant to pick it up.')
+    out(
+      stored.store === 'file'
+        ? `No system keychain is available, so it was saved to ${stored.path} (readable only by your ` +
+            'user account). Restart your AI assistant to pick it up.'
+        : 'Saved to the system keychain. Restart your AI assistant to pick it up.',
+    )
     return 0
   }
   if (command === 'logout') {
-    const removed = await deleteKeychain()
-    out(removed ? 'Removed the connection from the system keychain.' : 'No connection was stored in the keychain.')
+    const removed = await deleteStoredConnection(env)
+    out(
+      removed.keychain || removed.file
+        ? `Removed the stored connection (${[removed.keychain && 'system keychain', removed.file && 'file'].filter(Boolean).join(' and ')}).`
+        : 'No connection was stored on this computer.',
+    )
     out('To cut off access everywhere, revoke the connection in ShieldFive → Settings → AI assistants.')
     return 0
   }

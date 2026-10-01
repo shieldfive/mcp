@@ -58,9 +58,20 @@ copied from Settings → AI assistants instead, for a machine with no browser.
 
 `npx @shieldfive/mcp@0.6.5 status` shows which connection is configured and whether
 ShieldFive still accepts it. `npx @shieldfive/mcp@0.6.5 logout` removes it from the
-keychain. Revoking it in ShieldFive is what cuts off access everywhere.
+keychain and from the fallback file below. Revoking it in ShieldFive is what cuts off access everywhere.
 
-For CI or a machine without a keychain, set `SHIELDFIVE_GRANT` to the connection
+Where no system keychain can be used (a Linux machine without a Secret Service,
+for example), the connection is saved instead to a file only your user account
+can read: `~/Library/Application Support/shieldfive-mcp/connection` on macOS,
+`%APPDATA%\shieldfive-mcp\connection` on Windows,
+`$XDG_CONFIG_HOME/shieldfive-mcp/connection` (default `~/.config`) on Linux, or
+`$SHIELDFIVE_MCP_CONFIG_DIR/connection`. The server says when it does this. The
+file is not encrypted, since any key for it would sit on the same disk; it is
+protected by file permissions (0600) like an SSH key. Without it, every restart
+would need a new connection, and ShieldFive caps how many can be live at once.
+A later successful keychain save deletes the file.
+
+For CI, set `SHIELDFIVE_GRANT` to the connection
 string instead. Anything that can read the server's environment can then read
 the connection, so prefer the keychain wherever there is one. Setting
 `SHIELDFIVE_GRANT=none` keeps one client local-only on a machine whose keychain
@@ -124,7 +135,8 @@ What this does not protect:
   creation, though, a compromised server could mislabel which folder you
   picked.
 - **A copied connection string is a live key** to the folders it covers until
-  it expires or you revoke it. Keep it in the keychain.
+  it expires or you revoke it. Keep it in the keychain (or the 0600 fallback
+  file the server writes when there is no keychain).
 - **Files can contain instructions aimed at the assistant.** This server marks
   every name and file content as data, fences file contents in a block the file
   cannot close, caps `vault_trash` at 50 items per call, requires a preview for
@@ -439,7 +451,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 230 tests. The ones worth knowing about:
+`npm test` runs 238 tests. The ones worth knowing about:
 
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
@@ -546,8 +558,9 @@ origin in `SHIELDFIVE_API_URL`):
 - **What your assistant receives:** whatever it reads through this server,
   decrypted here, goes to whoever runs the assistant, under their terms — as
   anything else in that conversation would.
-- **Credential:** kept in the OS keychain (or `SHIELDFIVE_GRANT`), never logged,
-  returned or written to a file.
+- **Credential:** kept in the OS keychain (or `SHIELDFIVE_GRANT`), never logged
+  or returned. Only where no keychain is usable is it written to a file, readable
+  by your user account alone (see *Connect your vault*).
 
 Contact: [support@shieldfive.com](mailto:support@shieldfive.com), or
 [security@shieldfive.com](mailto:security@shieldfive.com) for vulnerabilities.

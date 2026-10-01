@@ -80,7 +80,7 @@ has.
 | An assistant acting without the user seeing the plan | Mutating tools are inert without `confirm: true` and report what they would displace as well as what they would move | yes |
 | An oversized argument | `limit`, `max_files`, `max_files_hashed`, `paths`, path length and `new_name` are capped at the MCP schema and again in the handler; values echoed in a refusal are cut short | yes |
 | A cancelled request still changing files | Nothing starts once a request is cancelled; a trash batch stops between items and says what moved; the outcome is logged, because the SDK sends no response to a cancelled request | yes |
-| Credential exposure in this code | The only credential is an agent grant, read from `SHIELDFIVE_GRANT` or the OS keychain; never logged, never returned, never written to a file. The only environment variables read are `SHIELDFIVE_MCP_ROOTS`, `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`. No account password, service key or vault-key route is referenced anywhere | yes |
+| Credential exposure in this code | The only credential is an agent grant, read from `SHIELDFIVE_GRANT`, the OS keychain, or (only where no keychain is usable) a 0600 file in the user's config directory; never logged, never returned. The only environment variables read are `SHIELDFIVE_MCP_ROOTS`, `SHIELDFIVE_GRANT`, `SHIELDFIVE_API_URL`, `SHIELDFIVE_MCP_CONFIG_DIR` and the platform's config-directory variables (`HOME`, `APPDATA`, `XDG_CONFIG_HOME`). No account password, service key or vault-key route is referenced anywhere | yes |
 | Network access | Only `vault/api.mjs` calls `fetch`, only to an https ShieldFive origin (or localhost for development). Local tools import nothing from the vault half; the transport is stdio | yes, for this package's source |
 | A grant opening more than its scope | Keys come only from the grant's own wraps (AAD-bound to grant, kind and object) and the folder chain below them. The server enforces scope on every request; local checks only produce clearer errors | yes, against an in-memory server with real ciphertext |
 | Revocation not taking effect | Every tool call re-fetches the grant and its listing; file contents are streamed through the API per request (no storage URL is ever held); nothing that would outlive a revocation is cached | yes |
@@ -154,8 +154,10 @@ has.
   assistant's provider sees of what was opened. Revocation cannot un-read.
 - **A connection string is a bearer credential plus its key.** Held by anyone,
   it gives that connection's access until it expires or is revoked. In the
-  keychain it is protected like any other stored secret; in `SHIELDFIVE_GRANT`
-  it is readable by anything that can read the process environment.
+  keychain it is protected like any other stored secret; in the no-keychain
+  fallback file it is protected by file permissions only (0600, readable by
+  anything running as the same user); in `SHIELDFIVE_GRANT` it is readable by
+  anything that can read the process environment.
 - **Instruction-following is the model's, not this server's.** The fencing and
   caps above bound the damage of an injected instruction to reversible changes
   inside the granted folders; they do not make a model ignore text.

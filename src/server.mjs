@@ -52,7 +52,7 @@ import { vaultUpload } from './tools/vaultUpload.mjs'
 import { createLocalFileGateway } from './localSource.mjs'
 import { createVaultApi, DEFAULT_API_URL } from './vault/api.mjs'
 import { runCli } from './vault/cli.mjs'
-import { loadGrantCredential } from './vault/credential.mjs'
+import { loadGrantCredential, storeConnection } from './vault/credential.mjs'
 import { createNamePool } from './vault/namePool.mjs'
 import { createVaultSession } from './vault/session.mjs'
 
@@ -601,6 +601,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     apiBaseUrl: env.SHIELDFIVE_API_URL || DEFAULT_API_URL,
     envGrant: Boolean(env.SHIELDFIVE_GRANT?.trim()),
     makeVault: (credential) => createVaultContext(env, { credential }),
+    storeConnection: (raw) => storeConnection(raw, { env }),
   }
   ctx.localFiles = roots.length ? createLocalFileGateway(ctx) : null
   const server = createServer(ctx)
