@@ -451,8 +451,12 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 238 tests. The ones worth knowing about:
+`npm test` runs 243 tests. The ones worth knowing about:
 
+- A file whose ciphertext and keys a server swapped with a sibling's is
+  refused (post-quantum and AES-GCM v1): the header's file id must be the row's.
+  A v4 name copied onto a row created with a UUIDv7 id is not shown, and an
+  upload seals both its name and its header to the row id it creates.
 - A symlink pointing out of a root is refused, on both the read and the write
   side, and so is a dangling symlink on a write path.
 - A `.shieldfive-mcp-trash` that is a symlink out of the root is refused, and

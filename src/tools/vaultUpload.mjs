@@ -19,7 +19,7 @@
 // tell the model it may offer to run `trash_local` — which asks for its own
 // confirmation, because deleting from someone's machine is its own decision.
 
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 
 import { encryptNameV6 } from '@shieldfive/crypto/vault'
 
@@ -27,6 +27,7 @@ import { formatBytes, quote } from '../format.mjs'
 import { requireApprovedPlan } from '../plans.mjs'
 import { ToolError } from '../roots.mjs'
 import { decryptContent } from '../vault/content.mjs'
+import { newRowBoundId } from '../vault/rowBinding.mjs'
 import { displayName } from '../vault/session.mjs'
 import {
   encryptForVault,
@@ -138,18 +139,19 @@ export async function uploadVerified(
   step = () => {},
 ) {
   const pk = recipientPublicKey(view.grant, ctx.vault.credential)
+  // The row id is chosen here, before anything is encrypted, so both the name
+  // (v6, AAD-bound to the row) and the content header (file_id) are sealed to
+  // it. A UUIDv7 id also tells readers to refuse an unbound name on this row.
+  const fileId = newRowBoundId()
   step(1, 'Encrypting on this machine')
   const enc = await encryptForVault({
     source: ctx.localFiles.open(local.path),
     size: local.size,
     folderKey,
     recipientPublicKey: pk,
+    rowId: fileId,
   })
 
-  // The row id is chosen here so the name can be sealed against it before the
-  // row exists: a v6 name is AAD-bound to its row, and a name sealed against
-  // some other id is one the owner's own client would refuse to open.
-  const fileId = randomUUID()
   const sealedName = JSON.stringify(
     await encryptNameV6({ name, folderKey, rowId: fileId }),
   )
