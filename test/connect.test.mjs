@@ -343,4 +343,100 @@ describe('the vault_connect tool', () => {
     assert.ok(root.connectFlow)
     root.connectFlow.cancel()
   })
+
+  describe('reconnecting retires the previous grant', () => {
+    const OLD_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    const oldVault = (revoke, source = 'keychain') => ({
+      credential: { grantId: OLD_ID, source },
+      api: {
+        grant: async () => ({ grant: { id: OLD_ID, scopes: ['read'], scopeAll: true, scopeFolderIds: [], expiresAt: '2027-01-01T00:00:00Z' } }),
+        revoke,
+      },
+      names: { close: async () => {} },
+    })
+
+    async function reconnect(root) {
+      const call = CONNECT_TOOL.handler(ctxFor(root), { reconnect: true })
+      call.catch(() => {})
+      await new Promise((r) => setTimeout(r, 20))
+      const state = new URL(root.connectFlow.url).searchParams.get('connect')
+      await post(root.connectFlow.port, { state, connection_string: GRANT })
+      return call
+    }
+
+    it('revokes the old grant with its own credentials once the new one works', async () => {
+      let revoked = 0
+      const previous = oldVault(async () => {
+        revoked += 1
+        return { ok: true }
+      })
+      const root = fakeRoot({ connectWaitMs: 5_000, vault: previous })
+      const res = await reconnect(root)
+      assert.equal(revoked, 1)
+      assert.notEqual(root.vault, previous)
+      assert.match(res.content[0].text, /Connected/)
+      assert.match(res.content[0].text, /previous connection \(aaaaaaaa…\) was revoked/)
+    })
+
+    it('still connects when the revoke fails, and tells the user the old grant is live', async () => {
+      const previous = oldVault(async () => {
+        const e = new Error('down')
+        e.code = 'network_error'
+        throw e
+      })
+      const root = fakeRoot({ connectWaitMs: 5_000, vault: previous })
+      const res = await reconnect(root)
+      assert.notEqual(root.vault, previous)
+      assert.match(res.content[0].text, /Connected/)
+      assert.match(res.content[0].text, /could not be revoked automatically and is still live/)
+      assert.match(res.content[0].text, /Settings → AI assistants/)
+    })
+
+    it('says nothing extra when the old grant was already revoked or expired', async () => {
+      const previous = oldVault(async () => {
+        const e = new Error('gone')
+        e.code = 'grant_invalid'
+        throw e
+      })
+      const root = fakeRoot({ connectWaitMs: 5_000, vault: previous })
+      const res = await reconnect(root)
+      assert.match(res.content[0].text, /Connected/)
+      assert.doesNotMatch(res.content[0].text, /previous connection/)
+    })
+
+    it('does not revoke a SHIELDFIVE_GRANT connection, but says it is still live', async () => {
+      let revoked = 0
+      const previous = oldVault(async () => (revoked += 1), 'env')
+      const root = fakeRoot({ connectWaitMs: 5_000, vault: previous, envGrant: true })
+      const res = await reconnect(root)
+      assert.equal(revoked, 0)
+      assert.match(res.content[0].text, /left live/)
+    })
+
+    it('does not revoke when the new connection is the same grant', async () => {
+      let revoked = 0
+      const previous = oldVault(async () => (revoked += 1))
+      previous.credential.grantId = '11111111-2222-4333-8444-555555555555'
+      const root = fakeRoot({ connectWaitMs: 5_000, vault: previous })
+      await reconnect(root)
+      assert.equal(revoked, 0)
+    })
+
+    it('does not revoke anything when the new connection fails to verify', async () => {
+      let revoked = 0
+      const previous = oldVault(async () => (revoked += 1))
+      const root = fakeRoot({
+        connectWaitMs: 5_000,
+        vault: previous,
+        makeVault: async (credential) => ({
+          credential,
+          api: { grant: async () => { const e = new Error('bad'); e.code = 'grant_invalid'; throw e } },
+          names: { close: async () => {} },
+        }),
+      })
+      await assert.rejects(reconnect(root))
+      assert.equal(revoked, 0)
+      assert.equal(root.vault, previous)
+    })
+  })
 })

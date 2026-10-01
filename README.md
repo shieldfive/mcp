@@ -451,7 +451,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 243 tests. The ones worth knowing about:
+`npm test` runs 249 tests. The ones worth knowing about:
 
 - A file whose ciphertext and keys a server swapped with a sibling's is
   refused (post-quantum and AES-GCM v1): the header's file id must be the row's.
