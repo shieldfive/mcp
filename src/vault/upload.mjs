@@ -28,6 +28,7 @@ import {
 } from '@shieldfive/crypto/vault'
 
 import { ToolError } from '../roots.mjs'
+import { uuidToBytes } from './rowBinding.mjs'
 
 /** Refused above this; the server refuses it too (AGENT_MAX_UPLOAD_BYTES). */
 export const MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -80,6 +81,9 @@ export async function encryptForVault({
   size,
   folderKey,
   recipientPublicKey: pk,
+  // The files-row UUID this ciphertext will live under. It goes into the
+  // header file_id, which every reader compares with the row it asked for.
+  rowId,
 }) {
   if (!Number.isInteger(size) || size <= 0) {
     throw new ToolError('empty_file', 'There is nothing in that file to upload.')
@@ -110,6 +114,7 @@ export async function encryptForVault({
     recipientPublicKey: pk,
     envelopeKey,
     plaintextSize: size,
+    fileId: uuidToBytes(rowId),
   })
 
   const bytes = new Uint8Array(await new Response(ciphertext).arrayBuffer())

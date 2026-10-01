@@ -6,10 +6,14 @@ import { parentPort } from 'node:worker_threads'
 
 import { decryptName, decryptNameWithKey, parseNameEnvelope } from '@shieldfive/crypto/vault'
 
+import { nameFitsRow } from './rowBinding.mjs'
+
 parentPort.on('message', async ({ id, raw, key, rowId, direct }) => {
   try {
     const envelope = parseNameEnvelope(raw)
-    if (!envelope) {
+    // A row-bound (UUIDv7) row only ever gets a v6 name; anything else there
+    // was copied from another row.
+    if (!envelope || !nameFitsRow(envelope, rowId)) {
       parentPort.postMessage({ id, ok: false })
       return
     }

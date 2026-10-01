@@ -10,6 +10,7 @@ import { decryptStreamPqHybridV1 } from '@shieldfive/crypto/streams/pq-hybrid-v1
 import { unwrapChainKey } from '@shieldfive/crypto/vault'
 
 import { ToolError } from '../roots.mjs'
+import { headerMatchesRow } from './rowBinding.mjs'
 
 /**
  * The key that opens a file's content, from the keys this grant holds:
@@ -55,6 +56,16 @@ export async function decryptContent(file, view, api, { maxBytes, signal }) {
   const ciphertext = await api.download(file.id, maxBytes + 1024 * 1024, signal)
   const blob = new Blob([ciphertext])
   const row = file.raw
+  // v1 and suite 0x03 headers carry the row UUID as file_id. The key wraps
+  // do not, so without this a server could serve another row's ciphertext and
+  // keys under this row and it would decrypt cleanly.
+  if ((row.cipherVersion === 2 || row.cipherVersion === 3) && !headerMatchesRow(ciphertext, file.id)) {
+    throw new ToolError(
+      'file_identity_mismatch',
+      'The stored contents belong to a different file than the one requested. Nothing was decrypted; ' +
+        'if this file was uploaded by an earlier version of this connector, upload it again.',
+    )
+  }
   let out
   try {
     if (row.cipherVersion === 3) {

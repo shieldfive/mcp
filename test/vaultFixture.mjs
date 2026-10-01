@@ -60,8 +60,7 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
     return id
   }
 
-  async function file(name, folderId, plaintext, { version = 3, pqAux = true, created = '2025-01-01T00:00:00Z' } = {}) {
-    const id = randomUUID()
+  async function file(name, folderId, plaintext, { version = 3, pqAux = true, created = '2025-01-01T00:00:00Z', id = randomUUID() } = {}) {
     const parentKey = folderId ? folders.get(folderId).fk : rootKey
     let ciphertext, csk, pqk = null, extra = {}
     if (version === 3) {
@@ -72,7 +71,8 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
       extra.combinedKey = out.combinedKey
     } else if (version === 2) {
       csk = key()
-      const out = await encryptV1(plaintext, { contentKey: csk })
+      // The web writer puts the row UUID in the v1 header file_id too.
+      const out = await encryptV1(plaintext, { contentKey: csk, fileId: uuidBytes(id) })
       ciphertext = new Uint8Array(await out.blob.arrayBuffer())
     } else {
       csk = key()
@@ -333,7 +333,7 @@ export async function buildVault({ scopes = ['read', 'organize'], whole = false 
   }
 
   return {
-    ids, folders, files, state, grant, rootKey, credential,
+    ids, folders, files, blobs, state, grant, rootKey, credential, file,
     connectionString: formatConnectionString(credential),
     fetchImpl,
     /** What the owner would see: re-open a file's name with the owner's keys. */
