@@ -1,6 +1,6 @@
 {
   "name": "@shieldfive/mcp",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "type": "module",
   "description": "MCP server for your end-to-end encrypted ShieldFive vault: move files off your computer into it (each copy verified before the original moves, nothing deleted), find duplicates, reclaim space and reorganise. Decrypts on your machine; access is scoped, expiring, revocable and audited.",
   "license": "MIT",
@@ -51,7 +51,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@napi-rs/keyring": "^2.1.0",
-    "@shieldfive/crypto": "1.0.0-rc.6",
+    "@shieldfive/crypto": "1.0.1",
     "libsodium-wrappers-sumo": "^0.8.4",
     "zod": "^3.25.0"
   },
