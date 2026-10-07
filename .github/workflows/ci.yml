@@ -1,17 +1,70 @@
 name: CI
 
+# Linux runs on every push and PR. The macOS leg costs ~10x a Linux minute, so
+# it runs only where macOS can actually behave differently:
+#   - release tags (v*) and manual runs (workflow_dispatch)
+#   - changes to code that branches on the platform: the OS keychain and its
+#     native dependency, browser opening, the per-OS config path, fs moves and
+#     trash, the Claude Desktop bundle (mcpb), and the darwin-only tests.
+# Release publishing itself stays in release.yml (ubuntu only).
+
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      macos: ${{ steps.decide.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'push' && github.ref_type == 'branch' || github.event_name == 'pull_request'
+        with:
+          filters: |
+            macos:
+              - '.github/workflows/ci.yml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'mcpb/**'
+              - 'scripts/build-mcpb.mjs'
+              - 'src/fsops.mjs'
+              - 'src/trash.mjs'
+              - 'src/roots.mjs'
+              - 'src/vault/credential.mjs'
+              - 'src/vault/connect.mjs'
+              - 'src/vault/cli.mjs'
+              - 'src/tools/vaultConnect.mjs'
+              - 'test/helpers.mjs'
+              - 'test/credential.test.mjs'
+              - 'test/connect.test.mjs'
+              - 'test/cross-device.test.mjs'
+              - 'test/regressions.test.mjs'
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          FILTERED: ${{ steps.filter.outputs.macos }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ] || [ "$REF_TYPE" = "tag" ] || [ "$FILTERED" = "true" ]; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
@@ -22,15 +75,19 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # The Claude Desktop bundle is built on Linux and installed on macOS and
-  # Windows. The build fails if any platform's keychain binary is missing.
-  bundle:
-    runs-on: ubuntu-latest
+  test-macos:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm run build:mcpb
+      - run: npm test
