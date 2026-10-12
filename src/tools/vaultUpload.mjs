@@ -242,7 +242,7 @@ export async function vaultUpload(ctx, args) {
   if (!args.confirm) {
     return result(
       `Would encrypt ${quote(local.path)} (${formatBytes(local.size)}) on this machine and upload it to ` +
-        `${plan.path}. The local file is NOT removed; after the upload is verified you can offer ` +
+        `${quote(plan.path)}. The local file is NOT removed; after the upload is verified you can offer ` +
         'to move it to the local trash with trash_local. Call again with confirm: true and this plan_token.',
       { plan, plan_token: ctx.plans.issue(plan) },
     )
