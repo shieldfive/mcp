@@ -291,6 +291,13 @@ describe('vault permissions', () => {
     const listed = await call('vault_list_files')
     assert.equal(listed.error, null, listed.error)
     assert.ok(listed.data.files.length > 0)
+    // Not "pending the owner's next unlock": contents never come with this grant.
+    assert.doesNotMatch(listed.texts[0], /pending the owner/)
+    assert.match(listed.texts[0], /contents are not available with this connection/)
+    const stats = await call('vault_storage_stats')
+    assert.equal(stats.error, null, stats.error)
+    assert.equal(stats.data.pending_owner_unlock, 0)
+    assert.equal(stats.data.contents_available, false)
     const read = await call('vault_read_file', { file_id: vault.ids.taxPdf })
     assert.match(read.error, /missing_scope.*not open file contents/)
     const dups = await call('vault_find_duplicates')

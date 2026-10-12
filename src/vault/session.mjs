@@ -150,7 +150,8 @@ export function createVaultSession({ credential, api, names }) {
         contentType: typeof f.contentType === 'string' ? displayName(f.contentType.slice(0, 100)) : null,
         cipherVersion: f.cipherVersion,
         inTrash: f.inTrash,
-        readable: contentKeyAvailable(f, folderKeys, wraps),
+        // A list-only grant never opens contents, whatever keys it holds.
+        readable: canReadContents(grant) && contentKeyAvailable(f, folderKeys, wraps),
         raw: f,
       })
     })
@@ -159,6 +160,11 @@ export function createVaultSession({ credential, api, names }) {
   }
 
   return { load, grantWrapKey }
+}
+
+/** Whether this grant may open file contents at all ("read" permission). */
+export function canReadContents(grant) {
+  return (grant?.scopes ?? []).includes('read')
 }
 
 function contentKeyAvailable(f, folderKeys, wraps) {
