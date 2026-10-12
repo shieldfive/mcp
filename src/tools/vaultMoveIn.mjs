@@ -118,7 +118,7 @@ export async function vaultMoveIn(ctx, args) {
 
   if (!args.confirm) {
     return result(
-      `Would move ${p.items.length} file(s), ${formatBytes(p.totalBytes)}, into ${p.folder.path}: ` +
+      `Would move ${p.items.length} file(s), ${formatBytes(p.totalBytes)}, into ${quote(p.folder.path)}: ` +
         'each is encrypted on this machine, uploaded, read back and compared byte for byte, and ' +
         `only then moved to the local trash in ${places.join(', ')}. Nothing is deleted; the space ` +
         'is freed when the user empties that directory. A file that fails stops the batch and ' +
@@ -166,7 +166,7 @@ export async function vaultMoveIn(ctx, args) {
         ctx,
         view,
         { local, folder: p.folder, folderKey: p.folderKey, name: item.name },
-        (n, label) => ctx.progress?.(i * 4 + n, total, `${item.name}: ${label}`),
+        (n, label) => ctx.progress?.(i * 4 + n, total, `${quote(item.name)}: ${label}`),
       )
       const t = await trash.trash(local.path, item.entry, {
         vault_file_id: up.fileId,
@@ -205,7 +205,7 @@ export async function vaultMoveIn(ctx, args) {
   }
   if (!failure) {
     return result(
-      `Moved ${moved.length} file(s), ${formatBytes(freedLater)}, into ${p.folder.path}. Every one was ` +
+      `Moved ${moved.length} file(s), ${formatBytes(freedLater)}, into ${quote(p.folder.path)}. Every one was ` +
         'read back from the vault and matched the file on disk byte for byte before its original was ' +
         `moved to the local trash (${places.join(', ')}, batch ${trash.batch}). NOTHING WAS DELETED: ` +
         `the ${formatBytes(freedLater)} is freed when the user empties that directory. A manifest.json ` +

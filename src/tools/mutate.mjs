@@ -315,7 +315,7 @@ export async function moveLocal(ctx, args) {
   if (!args.confirm) {
     const plan_token = ctx.plans.issue(fingerprint)
     return toolResult(
-      `Planned (nothing changed): move ${size.kind} ${source.realPath} → ${finalPath} ` +
+      `Planned (nothing changed): move ${size.kind} ${quote(source.realPath)} → ${quote(finalPath)} ` +
         `(${formatBytes(size.bytes)})` +
         (collision
           ? `. This DISPLACES an existing ${displaced.kind} of ${displaced.files} file(s), ` +
@@ -411,7 +411,7 @@ export async function moveLocal(ctx, args) {
 
   const left = outcome.leftInPlace
   return toolResult(
-    `Moved ${size.kind} ${source.realPath} → ${finalPath} (${formatBytes(size.bytes)}).` +
+    `Moved ${size.kind} ${quote(source.realPath)} → ${quote(finalPath)} (${formatBytes(size.bytes)}).` +
       (outcome.method === 'copy+remove'
         ? ' It crossed a filesystem boundary, so it was copied, and every file was flushed and ' +
           'verified by SHA-256 before its original was removed.'
@@ -489,8 +489,8 @@ export async function renameLocal(ctx, args) {
   if (!args.confirm) {
     const plan_token = ctx.plans.issue(fingerprint)
     return toolResult(
-      `Planned (nothing changed): rename ${basename(source.realPath)} → ${newName} ` +
-        `in ${dirname(source.realPath)}. Call again with confirm: true and this plan_token.`,
+      `Planned (nothing changed): rename ${quote(basename(source.realPath))} → ${quote(newName)} ` +
+        `in ${quote(dirname(source.realPath))}. Call again with confirm: true and this plan_token.`,
       { performed: false, ...plan, plan_token },
     )
   }
@@ -501,7 +501,7 @@ export async function renameLocal(ctx, args) {
   // The check above is for the preview. This is what keeps the promise: it
   // refuses if anything has appeared at the new name since.
   await renameNoReplace(source.realPath, finalPath, source.stats)
-  return toolResult(`Renamed to ${finalPath}.`, { performed: true, ...plan })
+  return toolResult(`Renamed to ${quote(finalPath)}.`, { performed: true, ...plan })
 }
 
 export async function createLocalFolder(ctx, args) {
@@ -510,7 +510,7 @@ export async function createLocalFolder(ctx, args) {
   if (dest.exists) {
     const st = await lstat(dest.realPath)
     if (st.isDirectory()) {
-      return toolResult(`${dest.realPath} already exists and is a directory.`, {
+      return toolResult(`${quote(dest.realPath)} already exists and is a directory.`, {
         performed: false,
         action: 'create_folder',
         path: dest.realPath,
@@ -527,7 +527,7 @@ export async function createLocalFolder(ctx, args) {
   if (!args.confirm) {
     const plan_token = ctx.plans.issue(plan)
     return toolResult(
-      `Planned (nothing changed): create directory ${dest.realPath}. ` +
+      `Planned (nothing changed): create directory ${quote(dest.realPath)}. ` +
         'Call again with confirm: true and this plan_token.',
       { performed: false, ...plan, plan_token },
     )
@@ -536,7 +536,7 @@ export async function createLocalFolder(ctx, args) {
   refuseIfCancelled(ctx)
   requireApprovedPlan(ctx, args.plan_token, plan)
   await mkdir(dest.realPath, { recursive: true })
-  return toolResult(`Created ${dest.realPath}.`, { performed: true, ...plan })
+  return toolResult(`Created ${quote(dest.realPath)}.`, { performed: true, ...plan })
 }
 
 /**
@@ -762,7 +762,7 @@ async function trashFailure(failure, planned, moved, batches, ctx) {
     )
   }
 
-  const shown = detail.moved.slice(0, 10).map((m) => `${m.original_path} → ${m.trashed_to}`)
+  const shown = detail.moved.slice(0, 10).map((m) => `${quote(m.original_path)} → ${quote(m.trashed_to)}`)
   return new ToolError(
     cancelled ? 'cancelled_partially_applied' : 'trash_partially_applied',
     (cancelled

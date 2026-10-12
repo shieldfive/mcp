@@ -297,7 +297,7 @@ export async function vaultReadFile(ctx, args) {
   const meta = fileOut(f)
   if (!looksText(f) || (f.size ?? 0) > VAULT_LIMITS.readMaxFileBytes) {
     return vaultResult(
-      `${f.path} is ${looksText(f) ? 'larger than 25 MB' : 'not a text file'}; returning its details only. ` +
+      `${quote(f.path)} is ${looksText(f) ? 'larger than 25 MB' : 'not a text file'}; returning its details only. ` +
         'This server does not return the contents of binary files.',
       { file: meta },
     )
@@ -307,10 +307,10 @@ export async function vaultReadFile(ctx, args) {
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch {
-    return vaultResult(`${f.path} is not valid UTF-8 text; returning its details only.`, { file: meta })
+    return vaultResult(`${quote(f.path)} is not valid UTF-8 text; returning its details only.`, { file: meta })
   }
   if (text.includes(String.fromCharCode(0))) {
-    return vaultResult(`${f.path} looks binary; returning its details only.`, { file: meta })
+    return vaultResult(`${quote(f.path)} looks binary; returning its details only.`, { file: meta })
   }
   const truncated = text.length > maxChars
   const body = truncated ? text.slice(0, maxChars) : text
@@ -318,7 +318,7 @@ export async function vaultReadFile(ctx, args) {
   const fence = `sf-${randomBytes(6).toString('hex')}`
   return {
     content: [
-      { type: 'text', text: `${f.path}: ${text.length.toLocaleString('en-US')} characters${truncated ? `, first ${maxChars.toLocaleString('en-US')} shown` : ''}.` },
+      { type: 'text', text: `${quote(f.path)}: ${text.length.toLocaleString('en-US')} characters${truncated ? `, first ${maxChars.toLocaleString('en-US')} shown` : ''}.` },
       { type: 'text', text: DATA_NOTE },
       { type: 'text', text: JSON.stringify({ file: meta, truncated }, null, 2) },
       { type: 'text', text: `<untrusted-file-content fence="${fence}">\n${body}\n</untrusted-file-content fence="${fence}">` },
@@ -449,7 +449,7 @@ export async function vaultMove(ctx, args) {
   }
   const plan = { op: 'move', item: identity(it), from: it.item.path, to: dest.path, dest: dest.id }
   if (!args.confirm) {
-    return vaultResult(`Would move ${it.item.path} into ${dest.path}. Call again with confirm: true and this plan_token.`, {
+    return vaultResult(`Would move ${quote(it.item.path)} into ${quote(dest.path)}. Call again with confirm: true and this plan_token.`, {
       plan,
       plan_token: ctx.plans.issue(plan),
     })
@@ -460,7 +460,7 @@ export async function vaultMove(ctx, args) {
     it.kind === 'file'
       ? await ctx.vault.api.patchFile(it.item.id, { folderId: dest.id, name: sealed.name, cskWrapped: sealed.cskWrapped, cskIv: sealed.cskIv, ...(sealed.pqkFkWrapped ? { pqkFkWrapped: sealed.pqkFkWrapped, pqkFkIv: sealed.pqkFkIv } : {}) }, ctx.signal)
       : await ctx.vault.api.patchFolder(it.item.id, { parentId: dest.id, name: sealed.name, fkWrapped: sealed.fkWrapped, fkIv: sealed.fkIv }, ctx.signal)
-  return vaultResult(`Moved ${it.item.path} into ${dest.path}. ${RESTORE_NOTE}`, { moved: it.item.id, audit_id: r.auditId })
+  return vaultResult(`Moved ${quote(it.item.path)} into ${quote(dest.path)}. ${RESTORE_NOTE}`, { moved: it.item.id, audit_id: r.auditId })
 }
 
 export async function vaultCreateFolder(ctx, args) {
@@ -471,7 +471,7 @@ export async function vaultCreateFolder(ctx, args) {
   if (parent.inTrash) throw new ToolError('invalid_destination', 'Folders cannot be created in the Bin.')
   const plan = { op: 'create_folder', parent: parent.id, parent_updated: parent.updatedAt, path: `${parent.path}/${name}` }
   if (!args.confirm) {
-    return vaultResult(`Would create ${plan.path}. Call again with confirm: true and this plan_token.`, { plan, plan_token: ctx.plans.issue(plan) })
+    return vaultResult(`Would create ${quote(plan.path)}. Call again with confirm: true and this plan_token.`, { plan, plan_token: ctx.plans.issue(plan) })
   }
   requireApprovedPlan(ctx, args.plan_token, plan)
   const parentKey = view.folderKeys.get(parent.id)
@@ -481,7 +481,7 @@ export async function vaultCreateFolder(ctx, args) {
   const w = await wrapChainKey(parentKey, fk)
   const sealed = JSON.stringify(await encryptNameV6({ name, folderKey: parentKey, rowId: id }))
   const r = await ctx.vault.api.createFolder({ id, parentId: parent.id, name: sealed, fkWrapped: w.wrapped, fkIv: w.iv }, ctx.signal)
-  return vaultResult(`Created ${plan.path}.`, { created: id, path: plan.path, audit_id: r.auditId })
+  return vaultResult(`Created ${quote(plan.path)}.`, { created: id, path: plan.path, audit_id: r.auditId })
 }
 
 export async function vaultTrash(ctx, args) {
@@ -504,7 +504,7 @@ export async function vaultTrash(ctx, args) {
   for (const it of items) {
     assertMovable(view, it)
     requireReadableName(it)
-    if (it.item.inTrash) throw new ToolError('already_trashed', `${it.item.path} is already in the Bin.`)
+    if (it.item.inTrash) throw new ToolError('already_trashed', `${quote(it.item.path)} is already in the Bin.`)
   }
   const plan = { op: 'trash', items: items.map(identity), paths: items.map((i) => i.item.path) }
   const bytes = items.reduce((n, i) => n + (i.kind === 'file' ? i.item.size ?? 0 : 0), 0)

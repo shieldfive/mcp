@@ -108,6 +108,14 @@ describe('vault tools', () => {
     assert.equal(body.split(closing).length, 2)
   })
 
+  it('quotes the vault path in the summary line outside the fence', async () => {
+    const { texts, error } = await call('vault_read_file', { file_id: vault.ids.notes })
+    assert.equal(error, null, error)
+    // A name is untrusted text too; the summary carries it as a JSON string,
+    // so a crafted name (newline, fake tag) stays visibly inside quotes.
+    assert.match(texts[0], /^"\/[^"]+": \d/)
+  })
+
   it('opens legacy v0 and v1 files too, and refuses binary contents', async () => {
     const r = await call('vault_read_file', { file_id: vault.ids.photoC })
     assert.equal(r.error, null)
