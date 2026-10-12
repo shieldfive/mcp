@@ -163,7 +163,7 @@ jobs:
           VER: ${{ needs.build.outputs.version }}
           CHANNEL: ${{ needs.build.outputs.channel }}
         run: |
-          TARBALL="dist/shieldfive-mcp-${VER}.tgz"
+          TARBALL="./dist/shieldfive-mcp-${VER}.tgz"
           test -f "$TARBALL" || { echo "::error::$TARBALL missing from the build artifact"; exit 1; }
           sha256sum "$TARBALL"
           # OIDC: npm exchanges this job's GitHub identity for a short-lived
