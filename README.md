@@ -118,6 +118,19 @@ In plain terms:
 - **Every change is previewed first.** Mutating tools report a plan, and the
   confirmed call must carry that plan's token and is refused if the items
   changed in between.
+- **You approve destructive changes yourself, where your client can ask.**
+  For the tools marked destructive (`vault_trash`, `vault_move_in`,
+  `move_local`, `trash_local`), a confirmed call first shows you the approved
+  plan through MCP elicitation, in your client's own prompt, and goes ahead only
+  if you accept. Declining changes nothing. A client without elicitation keeps
+  the preview-and-token flow above.
+- **Listing is separate from reading contents.** `vault_list_files`,
+  `vault_search_files` and `vault_storage_stats` return names and metadata
+  only. `vault_read_file` is the only tool that returns file contents, and
+  `vault_find_duplicates` the only other one that decrypts them (it returns
+  hashes). Start the server with `--no-contents` (or
+  `SHIELDFIVE_MCP_CONTENTS=off`) and those two are not registered at all; a
+  connection without the "read" permission is refused them too.
 
 What this does not protect:
 
@@ -160,8 +173,8 @@ are for people.
 | `vault_list_files` | read | files and folders in scope, with decrypted names, paths, sizes, dates |
 | `vault_search_files` | read | by name, path, extension, size or date, run locally over decrypted names |
 | `vault_storage_stats` | read | totals, the biggest folders and files, a breakdown by type |
-| `vault_find_duplicates` | read | same-size files decrypted in memory and compared by SHA-256; budgeted, and says when a result is a lower bound |
-| `vault_read_file` | read | text files as fenced, untrusted content (up to 1 M characters); other types return details only |
+| `vault_find_duplicates` | read (contents) | same-size files decrypted in memory and compared by SHA-256; budgeted, and says when a result is a lower bound |
+| `vault_read_file` | read (contents) | the only tool that returns contents: text files as fenced, untrusted content (up to 1 M characters); other types return details only |
 | `vault_rename` | organize | rename a file or folder |
 | `vault_move` | organize | move into another folder in scope |
 | `vault_create_folder` | organize | create a folder in scope |
@@ -451,7 +464,7 @@ renames, and a file created in that instant would be replaced.
 
 ## What the tests assert
 
-`npm test` runs 250 tests. The ones worth knowing about:
+`npm test` runs 256 tests. The ones worth knowing about:
 
 - A file whose ciphertext and keys a server swapped with a sibling's is
   refused (post-quantum and AES-GCM v1): the header's file id must be the row's.
@@ -478,7 +491,14 @@ renames, and a file created in that instant would be replaced.
 - Only `src/vault/api.mjs` calls `fetch`, and only to an https ShieldFive
   origin. No local-tool module imports anything from the vault half, and the
   only environment variables read are `SHIELDFIVE_MCP_ROOTS`,
-  `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`.
+  `SHIELDFIVE_MCP_CONTENTS`, `SHIELDFIVE_GRANT` and `SHIELDFIVE_API_URL`.
+- An upload opens the file first (with `O_NOFOLLOW`) and checks the open
+  descriptor with `fstat`: a symlink, or a file swapped or rewritten since the
+  plan, is refused, so what is encrypted is exactly what was checked.
+- A destructive confirmed call asks the user through elicitation when the
+  client supports it; a decline changes nothing.
+- `--no-contents` leaves the content tools out, and a list-only connection is
+  refused them.
 - The browser hand-off is the one inbound socket and the one subprocess in the
   package: `src/vault/connect.mjs` binds a random port on `127.0.0.1`, opens no
   connection of its own, and launches the browser with a fixed command and no

@@ -164,7 +164,7 @@ describe('the only credential is an agent grant', () => {
     // only locate the no-keychain connection file (vault/credential.mjs).
     assert.deepEqual([...seen].sort(), [
       'APPDATA', 'HOME', 'SHIELDFIVE_API_URL', 'SHIELDFIVE_GRANT', 'SHIELDFIVE_MCP_CONFIG_DIR',
-      'SHIELDFIVE_MCP_ROOTS', 'USERPROFILE', 'XDG_CONFIG_HOME',
+      'SHIELDFIVE_MCP_CONTENTS', 'SHIELDFIVE_MCP_ROOTS', 'USERPROFILE', 'XDG_CONFIG_HOME',
     ])
   })
 
