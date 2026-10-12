@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.7.1 - 2026-10-12
+
+0.7.0 was tagged but never published to npm: the release workflow passed
+`dist/<name>.tgz` to `npm publish`, which npm read as a GitHub repo shorthand.
+The tarball path is now `./dist/...`. 0.7.1 contains the same changes as 0.7.0
+below.
+
 ## 0.7.0 - 2026-10-12
 
 ### Added
