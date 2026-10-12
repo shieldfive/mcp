@@ -145,7 +145,7 @@ export async function uploadVerified(
   const fileId = newRowBoundId()
   step(1, 'Encrypting on this machine')
   const enc = await encryptForVault({
-    source: ctx.localFiles.open(local.path),
+    source: await ctx.localFiles.open(local.path, local.entry),
     size: local.size,
     folderKey,
     recipientPublicKey: pk,

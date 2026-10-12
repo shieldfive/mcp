@@ -5,6 +5,25 @@ All notable changes to `@shieldfive/mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Destructive tools (`vault_trash`, `vault_move_in`, `move_local`,
+  `trash_local`) ask the user through MCP elicitation before a confirmed call
+  runs, showing the approved plan; declining changes nothing. Clients without
+  elicitation keep the preview-and-token flow.
+- `--no-contents` / `SHIELDFIVE_MCP_CONTENTS=off`: list and search only. The
+  tools that decrypt contents (`vault_read_file`, `vault_find_duplicates`) are
+  not registered. Both also refuse a connection without the "read" permission,
+  ready for list-only connections.
+
+### Fixed
+
+- Uploads open the local file with `O_NOFOLLOW` and `fstat` the descriptor
+  against the planned file, instead of checking by path and then opening by
+  path (a check-then-use race).
+
 ## 0.6.6 - 2026-10-01
 
 ### Fixed

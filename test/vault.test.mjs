@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import { after, beforeEach, describe, it } from 'node:test'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
 import { createLocalFileGateway } from '../src/localSource.mjs'
@@ -47,11 +48,16 @@ async function connect(opts = {}) {
     now: () => Date.now(),
     plans: createPlanStore(),
     vault: await createVaultContext({}, { credential, api, names }),
+    ...(opts.contents === false ? { contents: false } : {}),
   }
   ctx.localFiles = ctx.roots.length ? createLocalFileGateway(ctx) : null
   const server = createServer(ctx)
   const [a, b] = InMemoryTransport.createLinkedPair()
-  client = new Client({ name: 'test', version: '1.0.0' })
+  client = new Client(
+    { name: 'test', version: '1.0.0' },
+    opts.elicit ? { capabilities: { elicitation: { form: {} } } } : undefined,
+  )
+  if (opts.elicit) client.setRequestHandler(ElicitRequestSchema, (req) => opts.elicit(req.params))
   await Promise.all([server.connect(a), client.connect(b)])
 }
 
@@ -278,6 +284,26 @@ describe('vault permissions', () => {
     assert.equal(await vault.ownerName(vault.ids.taxPdf), rtl, 'the real name is preserved exactly')
     const bad = await call('vault_rename', { item_id: vault.ids.taxPdf, new_name: rtl })
     assert.match(bad.error, /invalid_name/)
+  })
+
+  it('a list-only connection lists names but cannot open contents', async () => {
+    await connect({ scopes: ['list'] })
+    const listed = await call('vault_list_files')
+    assert.equal(listed.error, null, listed.error)
+    assert.ok(listed.data.files.length > 0)
+    const read = await call('vault_read_file', { file_id: vault.ids.taxPdf })
+    assert.match(read.error, /missing_scope.*not open file contents/)
+    const dups = await call('vault_find_duplicates')
+    assert.match(dups.error, /missing_scope/)
+    assert.ok(!vault.state.requests.some((q) => /download|content/i.test(q.url ?? q.path ?? '')))
+  })
+
+  it('--no-contents leaves the content tools out entirely', async () => {
+    await connect({ contents: false })
+    const names = (await client.listTools()).tools.map((t) => t.name)
+    assert.ok(names.includes('vault_list_files'))
+    assert.ok(!names.includes('vault_read_file'))
+    assert.ok(!names.includes('vault_find_duplicates'))
   })
 
   it('a malformed connection string is refused without echoing it', async () => {
@@ -566,5 +592,55 @@ describe('vault_move_in', () => {
     const trash = gateway.openTrash()
     await assert.rejects(trash.trash(local.path, local.entry, {}), /changed after it was uploaded/)
     assert.ok(await exists(tree.path('Desktop/a.txt')))
+  })
+})
+
+describe('elicitation for destructive tools', () => {
+  it('asks the user, and a decline changes nothing', async () => {
+    const asked = []
+    await connect({ elicit: (p) => (asked.push(p), { action: 'decline' }) })
+    const r = await confirmed('vault_trash', { item_ids: [vault.ids.taxPdf] })
+    assert.match(r.error, /declined_by_user/)
+    assert.equal(asked.length, 1)
+    assert.match(asked[0].message, /Nothing has been changed yet/)
+    assert.ok(!vault.state.requests.some((q) => q.method !== 'GET'))
+  })
+
+  it('goes ahead when the user accepts', async () => {
+    await connect({ elicit: () => ({ action: 'accept', content: {} }) })
+    const r = await confirmed('vault_trash', { item_ids: [vault.ids.taxPdf] })
+    assert.equal(r.error, null, r.error)
+  })
+
+  it('does not ask for a non-destructive change, or a client without elicitation', async () => {
+    let asked = 0
+    await connect({ elicit: () => (asked++, { action: 'decline' }) })
+    const mv = await confirmed('vault_move', { item_id: vault.ids.taxPdf, destination_folder_id: vault.ids.photos })
+    assert.equal(mv.error, null, mv.error)
+    assert.equal(asked, 0)
+    await connect()
+    const r = await confirmed('vault_trash', { item_ids: [vault.ids.taxPdf] })
+    assert.equal(r.error, null, r.error)
+  })
+})
+
+describe('upload source opening', () => {
+  it('opens then fstats: a symlink or a swapped file is refused at open', async () => {
+    const t = await makeTree({ 'a.txt': 'original', 'other.txt': 'secret' })
+    try {
+      const roots = (await resolveRoots([t.path('.')])).roots
+      const gateway = createLocalFileGateway({ roots, now: () => Date.now() })
+      const local = await gateway.describe(t.path('a.txt'))
+      const ok = await gateway.open(local.path, local.entry)
+      assert.equal(await new Response(ok).text(), 'original')
+      const { rename, symlink, writeFile } = await import('node:fs/promises')
+      await writeFile(t.path('a.txt'), 'rewritten, a different size')
+      await assert.rejects(gateway.open(local.path, local.entry), /changed since it was checked/)
+      await rename(t.path('a.txt'), t.path('moved.txt'))
+      await symlink(t.path('other.txt'), t.path('a.txt'))
+      await assert.rejects(gateway.open(local.path, local.entry), /symbolic link/)
+    } finally {
+      await t.cleanup()
+    }
   })
 })

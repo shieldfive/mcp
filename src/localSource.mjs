@@ -13,7 +13,8 @@
 // whose upload has been verified into this server's own trash — the same
 // directory, rules and manifest trash_local uses. Never a delete.
 
-import { createReadStream } from 'node:fs'
+import { constants as fsc, createReadStream } from 'node:fs'
+import { open as openFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
@@ -65,9 +66,44 @@ export function createLocalFileGateway(ctx) {
       }
     },
 
-    /** A byte stream of the plaintext, for encryption in memory. */
-    open(realPath) {
-      return Readable.toWeb(createReadStream(realPath))
+    /**
+     * A byte stream of the plaintext, for encryption in memory.
+     *
+     * Open first, then fstat the descriptor: the checks describe() made by
+     * path are only good for the moment they ran, and a file swapped (or a
+     * symlink planted) between that lstat and an open-by-path would be read
+     * in its place. O_NOFOLLOW refuses a symlink in the last component, and the
+     * descriptor's own identity (device, inode, mtime, size) must still be the
+     * entry the plan approved — a parent directory swapped for a link changes
+     * the inode too. What is read is exactly what was checked.
+     */
+    async open(realPath, expectedEntry) {
+      let handle
+      try {
+        handle = await openFile(realPath, fsc.O_RDONLY | (fsc.O_NOFOLLOW ?? 0))
+      } catch (err) {
+        if (err?.code === 'ELOOP' || err?.code === 'EMLINK') {
+          throw new ToolError('not_a_file', 'That path is a symbolic link. Point at the file itself.')
+        }
+        throw err
+      }
+      try {
+        const stats = await handle.stat()
+        if (!stats.isFile()) {
+          throw new ToolError('not_a_file', 'Only a single regular file can be uploaded.')
+        }
+        if (expectedEntry !== undefined && entryId(stats) !== expectedEntry) {
+          throw new ToolError(
+            'changed',
+            `${quote(realPath)} changed since it was checked, so nothing was uploaded. Plan again.`,
+          )
+        }
+      } catch (err) {
+        await handle.close().catch(() => {})
+        throw err
+      }
+      // The stream owns the descriptor and closes it when it ends or fails.
+      return Readable.toWeb(createReadStream(null, { fd: handle, autoClose: true }))
     },
 
     /**

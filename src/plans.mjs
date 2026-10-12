@@ -117,6 +117,16 @@ export function createPlanStore({ now = () => Date.now(), ttlMs = PLAN_TTL_MS, c
       return { ok: true, body: plan.body }
     },
 
+    /**
+     * The approved body behind a live token, WITHOUT consuming it — for showing
+     * the user what a confirmed call is about to do. Null if unknown or expired.
+     */
+    peek(token) {
+      const plan = typeof token === 'string' ? plans.get(token) : undefined
+      if (!plan || now() - plan.issuedAt >= ttlMs) return null
+      return plan.body
+    },
+
     get size() {
       return plans.size
     },

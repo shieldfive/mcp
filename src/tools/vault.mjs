@@ -65,6 +65,23 @@ function requireScope(view, scope) {
   }
 }
 
+/**
+ * Decrypting contents needs the "read" permission. Listing does not have to:
+ * a grant that carries "list" without "read" reaches names and metadata only.
+ * (The server enforces the same split on downloads; this refuses early with a
+ * clear message instead of a failed download.)
+ */
+function requireContentAccess(view) {
+  const scopes = view.grant.scopes ?? []
+  if (!scopes.includes('read')) {
+    throw new ToolError(
+      'missing_scope',
+      'This connection may list names and metadata but not open file contents (it has no "read" ' +
+        'permission). The vault owner can create a connection with it in ShieldFive → Settings → AI assistants.',
+    )
+  }
+}
+
 const extOf = (name) => {
   const m = (name ?? '').match(/\.([A-Za-z0-9]{1,10})$/)
   return m ? m[1].toLowerCase() : ''
@@ -196,6 +213,7 @@ export async function vaultStorageStats(ctx, args) {
 
 export async function vaultFindDuplicates(ctx, args) {
   const view = await loadView(ctx)
+  requireContentAccess(view)
   const minBytes = Number.isSafeInteger(args.min_bytes) && args.min_bytes > 0 ? args.min_bytes : 1
   const totalBudget = boundedInt(args.max_total_bytes, { name: 'max_total_bytes', max: VAULT_LIMITS.dupMaxTotalBytes, fallback: VAULT_LIMITS.dupDefaultTotalBytes })
   const fileCap = boundedInt(args.max_file_bytes, { name: 'max_file_bytes', max: VAULT_LIMITS.dupMaxFileBytes, fallback: VAULT_LIMITS.dupDefaultFileBytes })
@@ -291,6 +309,7 @@ function looksText(f) {
 
 export async function vaultReadFile(ctx, args) {
   const view = await loadView(ctx)
+  requireContentAccess(view)
   const f = view.files.get(args.file_id)
   if (!f) throw new ToolError('not_found', `file_id ${quote(args.file_id)} is not a file in this connection’s scope.`)
   const maxChars = boundedInt(args.max_bytes, { name: 'max_bytes', max: VAULT_LIMITS.readMaxBytes, fallback: VAULT_LIMITS.readDefaultBytes })
