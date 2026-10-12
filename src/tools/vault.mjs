@@ -21,7 +21,7 @@ import { boundedInt } from '../limits.mjs'
 import { requireApprovedPlan } from '../plans.mjs'
 import { ToolError } from '../roots.mjs'
 import { classicalKey, contentKey, decryptContent, sha256Hex } from '../vault/content.mjs'
-import { displayName } from '../vault/session.mjs'
+import { canReadContents, displayName } from '../vault/session.mjs'
 
 export const VAULT_LIMITS = Object.freeze({
   listLimit: 5_000,
@@ -139,7 +139,11 @@ export async function vaultListFiles(ctx, args) {
   const unreadable = files.filter((f) => !f.readable).length
   return vaultResult(
     `${files.length} file(s) in ${folders.length} folder(s); showing ${page.length} from ${offset}.` +
-      (unreadable ? ` ${unreadable} cannot be opened by this connection yet (pending the owner’s next unlock).` : ''),
+      (!canReadContents(view.grant)
+        ? ' File contents are not available with this connection (it may list names and metadata only).'
+        : unreadable
+          ? ` ${unreadable} cannot be opened by this connection yet (pending the owner’s next unlock).`
+          : ''),
     { folders, files: page.map(fileOut), total: files.length, next_offset: offset + page.length < files.length ? offset + page.length : null },
   )
 }
@@ -191,7 +195,9 @@ export async function vaultStorageStats(ctx, args) {
     byType.set(t, cur)
   }
   const trashed = [...view.files.values()].filter((f) => f.inTrash)
-  const pending = files.filter((f) => !f.readable).length
+  // Nothing is "pending" for a list-only grant: its contents never unlock.
+  const contentsAvailable = canReadContents(view.grant)
+  const pending = contentsAvailable ? files.filter((f) => !f.readable).length : 0
   return vaultResult(
     `${files.length} file(s), ${formatBytes(total)} in this connection’s scope` +
       (trashed.length ? `; ${trashed.length} item(s) in this connection’s Bin folder` : '') +
@@ -206,6 +212,7 @@ export async function vaultStorageStats(ctx, args) {
       biggest_files: [...files].sort((a, b) => (b.size ?? 0) - (a.size ?? 0)).slice(0, 20).map(fileOut),
       by_type: [...byType.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 25),
       pending_owner_unlock: pending,
+      contents_available: contentsAvailable,
       in_connection_bin: { files: trashed.length, bytes: trashed.reduce((n, f) => n + (f.size ?? 0), 0) },
     },
   )
