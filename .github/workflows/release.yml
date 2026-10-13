@@ -31,7 +31,7 @@ name: release
 #
 # ── RELEASE FLOW ─────────────────────────────────────────────────────────────
 #   merge the release PR → push an annotated tag vX.Y.Z at the merge commit.
-#   The MCP registry listing is still published separately with mcp-publisher.
+#   The MCP registry listing is published by registry.yml on the same tag.
 
 on:
   push:
