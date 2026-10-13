@@ -1,0 +1,63 @@
+name: registry
+
+# Publishes server.json to the official MCP registry
+# (registry.modelcontextprotocol.io) after a version tag is pushed.
+#
+# Why this exists: `mcp-publisher login github` from a laptop gets a token for
+# the person, and the registry then refused io.github.shieldfive/* (2026-10-13)
+# even with public org membership. GitHub OIDC proves the run belongs to the
+# shieldfive org directly, so no personal login or secret is involved.
+#
+# mcp-publisher is pinned to one release and its tarball checksum.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag to publish (e.g. v0.7.1)'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  MCP_PUBLISHER_VERSION: v1.8.1
+  MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # REQUIRED for mcp-publisher login github-oidc
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Install mcp-publisher (pinned + checksum)
+        run: |
+          curl -fsSL -o mcp-publisher.tgz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tgz" | sha256sum -c -
+          tar -xzf mcp-publisher.tgz mcp-publisher
+          rm mcp-publisher.tgz
+
+      - name: Verify server.json version matches the tag
+        env:
+          TAG_REF: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          SERVER_VERSION="$(node -p "require('./server.json').version")"
+          if [ "$SERVER_VERSION" != "${TAG_REF#v}" ]; then
+            echo "::error::Tag (${TAG_REF#v}) does not match server.json version $SERVER_VERSION"
+            exit 1
+          fi
+
+      - name: Publish to the MCP registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
